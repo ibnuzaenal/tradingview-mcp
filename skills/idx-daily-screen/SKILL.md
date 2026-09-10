@@ -1,6 +1,6 @@
 ---
-name: idx-daily-screener
-description: Generate the IDX Daily Screener PDF report (IHSG gauge, Top Gainer/Loser with volume-trap check, macro/sentiment panel, sector-categorized watchlist cards with Decision Gate 2.0/3.0) purely from CSV price data — no TradingView Desktop required. Use when asked for the daily IDX screening report. Does NOT include emailing the report — that stays a separate, explicit step, on hold until it can run unattended/from a phone.
+name: idx-daily-screen
+description: Generate the IDX Daily Screen(er) PDF report (IHSG gauge, Top Gainer/Loser with volume-trap check, macro/sentiment panel, sector-categorized watchlist cards with Decision Gate 2.0/3.0) purely from CSV price data — no TradingView Desktop required, runnable from a phone/cloud session. Trigger phrases: "IDX Daily Screen", "jalankan IDX Daily Screening", "buat laporan screening IDX hari ini". Does NOT include emailing the report — that stays a separate, explicit step, on hold until it can run unattended/from a phone.
 ---
 
 # IDX Daily Screener — Report Generation (CSV-based, no TradingView Desktop)
