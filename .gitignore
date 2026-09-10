@@ -9,3 +9,4 @@ temp_*
 discovery-log.json
 rules.json
 .DS_Store
+.claude/worktrees/
