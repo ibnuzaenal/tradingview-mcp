@@ -1,0 +1,1489 @@
+//@version=6
+// ============================================================================
+// IDX Analyzer Dev V2.5 [IZA]
+// ----------------------------------------------------------------------------
+// V2.5 extends the AI Forecast target line by 7 bars and the TR Forecast
+// target line by 1 more bar (now +15 past the shared horizon marker, was
+// +14). The 17-row top-right table dashboard is replaced entirely by a
+// single floating on-chart info panel, positioned 5 ATR above the highest
+// point of the AI Forecast candlesticks (falls back to the highest forecast
+// price if AI Forecast candles are not drawn). The panel is trimmed to only
+// the fields not already visible elsewhere on chart via a line, label or
+// notation: SYMBOL/POSITION, DECISION, TREND, STRUCTURE, SETUP, CANDLE,
+// RVOL/FLOW, SCORE/LOT, ATR%, LEVEL ACC (TR1/SR) and PATTERN ACC (aggregated
+// across all 4 chart-pattern types). Everything already shown on the chart
+// itself — Support/Resistance/TR1/TR2/Stop/Entry-Area prices (level lines),
+// Accumulation/Distribution class and Trap/Anomaly state (candle notation
+// tags), and every TR/AI Forecast number (direction, target, confidence,
+// invalidation, status, target accuracy — all already printed inside the
+// TR FORECAST / AI FORECAST panels themselves) — was dropped from the panel
+// to avoid duplication. Each panel line is formatted "LABEL :    value" with
+// the label in bold (Unicode) text via the existing f_bold() helper.
+// ----------------------------------------------------------------------------
+// V2.4 adds short-term (10D) trading levels tied to the Forecast module's own
+// range/timeline: SUPPORT/RESISTANCE (10-bar high/low), TR1 (the same TR
+// Forecast path evaluated at 10 bars instead of the full horizon — not a
+// separate calculation), TR2 (= trendForecastClose20, reused directly), STOP
+// LOSS (support - ATR buffer) and an ENTRY-AREA line, drawn width 1 and
+// transparent, ending 2 bars past the AI Forecast candlesticks, each tagged
+// with a small label carrying a bold (Unicode) price. Accuracy/consistency of
+// these new levels is tracked with the same locked-rolling methodology
+// already used for the TR/AI 20D forecasts: TR1 ACC (direction+tolerance hit
+// rate) and SR CONSIST (does the 10-bar S/R band set N bars ago still hold
+// now) are both surfaced on the dashboard. The TR Forecast target line was
+// extended by 5 bars, the TR/AI panel text now puts "Target Acc:" on its own
+// line instead of sharing a line with "Status:", and the Entry-Buy/Exit-Sell
+// notations are now size.small with bold (Unicode) text instead of size.tiny
+// plain text, reusing the same bold-text helper as the new level tags.
+// ----------------------------------------------------------------------------
+// V2.3 merges in "IDX AI Forecast + Trend Forecast [IZA] Dev V2.4" as this
+// script's short-term forecasting module, alongside the existing Elite 20D
+// decision engine + Chart Pattern engine. Focus per this merge: pattern
+// recognition, trend, and prediction for short-term trading.
+//
+// Redundancy audit performed before merging (the two source scripts shared
+// several identical calculations — fixed by computing each ONCE and sharing
+// it, not by pasting both copies side by side):
+//   • The weekly request.security() call in the Forecast script was BYTE-FOR-
+//     BYTE identical to the one already in this script (same ticker, same
+//     "W" resolution, same [close[1], ema20[1], ema20[2], rsi14[1]] tuple,
+//     same lookahead). Kept exactly one call; both halves read from it.
+//   • ema10/ema20/ema50/sma200/rsi14/atr14/volMA20/rvol and
+//     rng/body/upperWick/lowerWick/clv were computed twice with identical
+//     formulas. Computed once in the shared base-calculations block.
+//   • Forecast's `wRegime` and Elite's `wBull`/`wBear` are the same weekly
+//     bull/bear threshold test run twice on the same data — `wRegime` is now
+//     derived directly from `wBull`/`wBear` instead of re-evaluating the
+//     thresholds.
+//   • Forecast's own EMA20/EMA50 plot() calls duplicated Elite's existing
+//     (transparency-controlled) EMA20/EMA50 plots — dropped the duplicates,
+//     kept Elite's.
+//   • Elite's dashboard RVOL cell and Forecast's "RVOL/FLOW" cell showed
+//     overlapping data from the same `rvol` value — merged into one cell.
+// Data-flow direction confirmed one-way, no callbacks: base indicators feed
+// both the Elite/Chart-Pattern half and the Forecast half; neither half
+// feeds back into the other's inputs. The AI Forecast pattern-matching
+// engine's own nested loops are unchanged from source (see license note
+// below) and were already gated to run only on confirmed bars.
+//
+// Timeline reference rule (per explicit instruction): where the two halves'
+// forward-looking drawings could ever conflict on the future timeline, the
+// IDX AI Forecast module's horizon-based timeline (bar_index + horizon) is
+// authoritative. In practice no conflict exists — the Chart Pattern engine's
+// target-line projection (tgtLen, default 30 bars) and the Forecast module's
+// horizon projection (default 20 bars) are independent, differently-scaled
+// concepts that were left untouched; this rule is documented here as the
+// tie-breaker should the two ever need reconciling in a future edit.
+//
+// LICENSE NOTE — the AI Forecast pattern-matching block (search for
+// "AI Forecast — pencocokan pola historis" below) adapts the feature/
+// distance/nearest-neighbor technique from "AI Forecast Pattern Engine" by
+// aibitcointrend, licensed CC BY-NC-SA 4.0 (non-commercial, share-alike,
+// attribution required — https://creativecommons.org/licenses/by-nc-sa/4.0/).
+// This clause must stay attached to this file if it is ever redistributed or
+// published; its internals were left unmodified during this merge.
+// ----------------------------------------------------------------------------
+// V2.2 fixed a real runtime crash from V2.1: "RE10140 — script creates too
+// many plots (73). The limit is 64." Root cause: 17 near-identical
+// plotshape() calls each occupied one of the script's 64 plot-budget slots
+// for what was functionally one operation. Consolidated into a priority-
+// ordered label routine (2 labels/bar max) — labels use a separate budget.
+// ----------------------------------------------------------------------------
+// V2.1 upgrade over V2.0, benchmarked against real daily data for BBCA, BBNI,
+// BBRI, BMRI and ASII: added a reversal-confluence BUY path (setup "RV2")
+// that does not wait on the lagging weekly trend gate, cross-wired the Chart
+// Pattern engine's confirmed-but-unresolved pattern bias into Elite scoring/
+// gating, added real candlestick-pattern recognition, and added ADX
+// confirmation to "BULL STRONG".
+// ----------------------------------------------------------------------------
+// Original merge sources:
+//   • "IDX Analyzer Elite [IZA] - 20D"       — weekly-gated trend/structure
+//                                              regime, accumulation/
+//                                              distribution scoring, setups,
+//                                              entry/stop/target sizing,
+//                                              decision label and dashboard.
+//   • "Chart Patterns [FEELS]"               — ATR-adaptive Double Top/
+//                                              Bottom and Head & Shoulders /
+//                                              Inverse H&S engine with a
+//                                              forming -> confirmed ->
+//                                              resolved lifecycle and its
+//                                              own hit-rate table.
+//   • "IDX AI Forecast + Trend Forecast Dev
+//      V2.4"                                 — ensemble trend/momentum/
+//                                              volume/mean-reversion drift
+//                                              projection blended with a
+//                                              nearest-neighbor historical
+//                                              pattern-match forecast, plus
+//                                              locked rolling accuracy
+//                                              validation for both.
+// Chart Pattern Engine defaults (Swing size 3 / Confirm within 30 / Track
+// outcome for 60) match the standalone Chart Patterns [FEELS] script.
+// This is a separate lineage from pine/IDX_Analyzer_PRO_v6_FRESH_IZA.pine —
+// v6 is untouched by this file.
+// Price-volume decision support; not a guarantee and not true broker flow.
+// The forecast module is a quantitative projection, not trained machine
+// learning and not a guarantee; it redraws from the latest chart state.
+// ============================================================================
+
+indicator("IDX Analyzer Dev V2.5", shorttitle = "IDXADev2.5", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 120, max_bars_back = 5000)
+
+// ---------- Inputs: Elite 20D
+grpMode = "01. Mode & Position"
+hasPosition = input.bool(false, "Sudah memiliki saham", group=grpMode)
+avgBuy = input.float(0.0, "Harga rata-rata beli", minval=0, step=1, group=grpMode)
+initialStopInput = input.float(0.0, "Stop awal manual (0 = otomatis)", minval=0, step=1, group=grpMode)
+entryTime = input.time(timestamp("2025-01-01T00:00:00+07:00"), "Tanggal entry", group=grpMode)
+capital = input.float(100000000, "Modal (Rp)", minval=0, step=1000000, group=grpMode)
+riskPct = input.float(0.75, "Risiko per transaksi (%)", minval=0.1, maxval=2.0, step=0.05, group=grpMode)
+
+grpFilter = "02. Filter"
+minAvgValue = input.float(10000000000, "Minimum rata-rata nilai transaksi 20D (Rp)", minval=0, step=1000000000, group=grpFilter)
+minRR = input.float(2.0, "Minimum risk-reward", minval=1.0, maxval=5.0, step=0.1, group=grpFilter)
+maxStopPct = input.float(8.0, "Maksimum jarak stop (%)", minval=2, maxval=15, step=0.5, group=grpFilter)
+maxExtensionATR = input.float(2.0, "Maksimum extension dari EMA20 (ATR)", minval=0.5, maxval=5, step=0.1, group=grpFilter)
+
+grpLevel = "03. Struktur & Level"
+pivotLen = input.int(5, "Pivot kiri/kanan", minval=2, maxval=15, group=grpLevel)
+zoneATR = input.float(0.25, "Lebar setengah buy zone (ATR)", minval=0.1, maxval=1, step=0.05, group=grpLevel)
+stopBufferATR = input.float(0.25, "Buffer stop (ATR)", minval=0.1, maxval=1, step=0.05, group=grpLevel)
+
+grpFlow = "04. Akumulasi, Distribusi & Trap"
+rvolSmall = input.float(1.10, "RVOL kecil", minval=1, step=0.05, group=grpFlow)
+rvolMedium = input.float(1.50, "RVOL sedang", minval=1, step=0.05, group=grpFlow)
+rvolLarge = input.float(2.00, "RVOL besar", minval=1, step=0.1, group=grpFlow)
+rvolAnomaly = input.float(2.50, "RVOL anomali", minval=1.5, step=0.1, group=grpFlow)
+trapWindow = input.int(3, "Jendela konfirmasi trap", minval=1, maxval=5, group=grpFlow)
+
+grpVisual = "05. Tampilan"
+displayMode = input.string("Standard", "Mode notasi", options=["Minimal", "Standard", "Detail"], group=grpVisual)
+showMA = input.bool(true, "Tampilkan EMA/SMA", group=grpVisual)
+showLevels = input.bool(true, "Tampilkan support/resistance", group=grpVisual)
+showBuyZone = input.bool(false, "Tampilkan buy zone", group=grpVisual, tooltip = "Default nonaktif — area buy zone disembunyikan dari chart")
+showDashboard = input.bool(true, "Tampilkan dashboard", group=grpVisual)
+showDecisionLabels = input.bool(true, "Label saat keputusan berubah", group=grpVisual)
+maxDecisionLabels = input.int(80, "Maksimum label keputusan", minval=10, maxval=180, group=grpVisual)
+lineTransparency = input.int(85, "Transparansi garis indikator", minval=0, maxval=95, group=grpVisual, tooltip = "Semua garis EMA/SMA/S-R/stop/target dibuat transparan pada level ini")
+notationTransparency = input.int(55, "Transparansi notasi", minval=0, maxval=95, group=grpVisual, tooltip = "Transparansi latar label notasi (WAIT-S, AK2, dsb) — ukuran tetap tiny")
+
+// ---------- Inputs: Chart Patterns [FEELS]
+grpPatCore = "06. Chart Pattern Engine"
+pivLen   = input.int(3, "Swing size", minval = 3, maxval = 40, group = grpPatCore, tooltip = "Pivot width on each side. Bigger = fewer, larger patterns")
+tolIn    = input.float(0.5, "Level tolerance, ATR", minval = 0.1, maxval = 2, step = 0.1, group = grpPatCore, tooltip = "How close two tops, two bottoms or two shoulders must be to count as equal")
+bufIn    = input.float(0.15, "Break buffer, ATR", minval = 0, maxval = 1, step = 0.05, group = grpPatCore, tooltip = "Price must clear the neckline by this much to confirm the pattern")
+confMode = input.string("Close", "Neckline break", options = ["Close", "Wick"], group = grpPatCore, tooltip = "Close: the bar must CLOSE beyond the neckline (strict, fewer but cleaner signals). Wick: an intrabar pierce of the neckline confirms (looser, surfaces more patterns such as inverse H&S that spike through the neckline but close back)")
+voidTol  = input.float(0.0, "Extra invalidation room, ATR", minval = 0, maxval = 3, step = 0.25, group = grpPatCore, tooltip = "How far past the head/apex price may travel before a forming pattern is discarded. Higher = patterns survive deeper shakeouts (more inverse H&S and double bottoms)")
+maxWait  = input.int(30, "Confirm within, bars", minval = 10, maxval = 300, group = grpPatCore, tooltip = "A forming pattern that does not break its neckline within this many bars is dropped")
+trackBars = input.int(60, "Track outcome for, bars", minval = 20, maxval = 500, group = grpPatCore, tooltip = "How long to follow a confirmed pattern to see if it reached its measured target")
+maxKeep  = input.int(12, "Patterns kept", minval = 1, maxval = 30, group = grpPatCore, tooltip = "Oldest confirmed patterns beyond this are removed to keep the chart clean")
+tgtLen   = input.int(30, "Target line length, bars", minval = 5, maxval = 100, group = grpPatCore)
+patBlockBars = input.int(5, "Blokir BUY N bar setelah pola bearish", minval = 0, maxval = 20, group = grpPatCore, tooltip = "Setelah Double Top/H&S terkonfirmasi dan belum resolved, BUY baru diblokir selama N bar ini")
+patBoostBars = input.int(10, "Bonus skor N bar setelah pola bullish", minval = 0, maxval = 30, group = grpPatCore, tooltip = "Setelah Double Bottom/iH&S terkonfirmasi dan belum resolved, skor akumulasi/beli mendapat bonus selama N bar ini")
+
+grpP = "07. Chart Pattern Types"
+showDT  = input.bool(true, "Double Top",       group = grpP)
+showDB  = input.bool(true, "Double Bottom",    group = grpP)
+showHS  = input.bool(true, "Head & Shoulders", group = grpP)
+showIHS = input.bool(true, "Inverse H&S",      group = grpP)
+dblMode = input.string("Any", "Second peak / bottom", options = ["Any", "Weaker"], group = grpP, tooltip = "Weaker: only take a Double Top whose second peak is not higher than the first, and a Double Bottom whose second bottom is not lower than the first. This is the classic momentum-failure form and tends to give cleaner reversals")
+
+grpS = "08. Chart Pattern Style"
+bearCol = input.color(#f23645, "Bearish", group = grpS)
+bullCol = input.color(#089981, "Bullish", group = grpS)
+showTgt = input.bool(true, "Show target line", group = grpS)
+showOutcome = input.bool(true, "Outcome labels", group = grpS, tooltip = "Prints a small tag where each pattern resolved. Alerts and the table work regardless")
+hitTxt  = input.string("target", "Target-reached text", group = grpS, tooltip = "Label printed where a confirmed pattern reached its measured target. A check mark is prefixed automatically")
+failTxt = input.string("failed", "Invalidated text", group = grpS, tooltip = "Label printed where a confirmed pattern was invalidated before reaching target. A cross is prefixed automatically")
+outSizeS = input.string("Small", "Outcome text size", options = ["Tiny", "Small", "Normal", "Large"], group = grpS)
+showStats = input.bool(true, "Hit-rate table", group = grpS, tooltip = "Ditampilkan sebagai baris PATTERN ACC (gabungan 4 tipe pola) di panel info on-chart")
+minStat = input.int(1, "Min samples for table", minval = 1, maxval = 20, group = grpS, tooltip = "A pattern type appears in the table once it has this many resolved samples")
+txtSizeS = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = grpS)
+
+txtSize = txtSizeS == "Tiny" ? size.tiny : txtSizeS == "Normal" ? size.normal : txtSizeS == "Large" ? size.large : size.small
+resSize = outSizeS == "Tiny" ? size.tiny : outSizeS == "Normal" ? size.normal : outSizeS == "Large" ? size.large : size.small
+
+// ---------- Inputs: IDX AI + Trend Forecast
+grpFcModel = "09. Forecast Model"
+horizon = input.int(20, "Horizon (hari bursa)", minval=5, maxval=60, group=grpFcModel)
+regLen = input.int(20, "Panjang regresi", minval=10, maxval=100, group=grpFcModel)
+wTrend = input.float(0.45, "Bobot trend", minval=0, maxval=1, step=0.05, group=grpFcModel)
+wMomentum = input.float(0.20, "Bobot momentum", minval=0, maxval=1, step=0.05, group=grpFcModel)
+wVolume = input.float(0.20, "Bobot volume/flow", minval=0, maxval=1, step=0.05, group=grpFcModel)
+wMeanRev = input.float(0.15, "Bobot mean reversion", minval=0, maxval=1, step=0.05, group=grpFcModel)
+maxForecastPct = input.float(25.0, "Batas absolut forecast (%)", minval=5, maxval=50, step=1, group=grpFcModel)
+
+grpAiFc = "10. AI Forecast"
+useaiForecast = input.bool(true, "Aktifkan AI Forecast", group=grpAiFc)
+aiForecastPatternLen = input.int(20, "Panjang pola (bar)", minval=10, maxval=60, group=grpAiFc)
+aiForecastDictSize = input.int(40, "Ukuran kamus pola", minval=20, maxval=100, tooltip="Jumlah pola historis yang disimpan sebagai referensi. Nilai besar = konteks lebih luas tapi lebih berat dihitung pada riwayat panjang.", group=grpAiFc)
+aiForecastNeighbors = input.int(3, "Jumlah tetangga terdekat", minval=1, maxval=10, group=grpAiFc)
+aiForecastWeight = input.float(0.35, "Bobot blending ke forecast utama", minval=0, maxval=1, step=0.05, tooltip="Seberapa besar hasil AI Forecast mempengaruhi drift harian gabungan", group=grpAiFc)
+aiForecastWeightPower = input.float(2.0, "Pangkat inverse-distance", minval=0.5, maxval=4.0, step=0.25, tooltip="Lebih besar memberi penekanan lebih kuat pada pola yang benar-benar dekat.", group=grpAiFc)
+aiForecastMinSpacing = input.int(3, "Jarak minimum antar-neighbor", minval=1, maxval=20, tooltip="Mengurangi dominasi pola historis yang hampir identik karena saling overlap.", group=grpAiFc)
+aiForecastFilterLen = input.int(3, "Smoothing target AI Forecast", minval=1, maxval=20, group=grpAiFc)
+aiForecastBandAtr = input.float(1.5, "Lebar band AI Forecast (ATR)", minval=0.25, maxval=5.0, step=0.25, group=grpAiFc)
+showPatternShape = input.bool(true, "Tampilkan bentuk pola historis (visual)", group=grpAiFc)
+
+grpFcRisk = "11. Forecast Validasi"
+minRvol = input.float(1.0, "RVOL konfirmasi", minval=0.5, maxval=3, step=0.1, group=grpFcRisk)
+minConfidence = input.float(55, "Confidence minimum (%)", minval=40, maxval=90, step=1, group=grpFcRisk)
+atrInvalidation = input.float(2.0, "Invalidation (ATR)", minval=0.5, maxval=5, step=0.25, group=grpFcRisk)
+showCandles = input.bool(true, "Tampilkan candle Trend Forecast", group=grpFcRisk)
+showBand = input.bool(true, "Rentang ketidakpastian Trend Forecast", group=grpFcRisk)
+showHistory = input.bool(true, "Simpan candle prediksi yang sudah terjadi", group=grpFcRisk)
+evaluationMode = input.string("Direction + ATR tolerance", "Metode validasi", options=["Direction + ATR tolerance", "Direction only"], group=grpFcRisk)
+errorToleranceATR = input.float(1.0, "Toleransi error close (ATR)", minval=0.25, maxval=3, step=0.25, group=grpFcRisk)
+evaluationLookback = input.int(50, "Lookback statistik validasi", minval=20, maxval=250, group=grpFcRisk)
+
+grpShortTerm = "12. Level Jangka Pendek (10D)"
+showShortTermLevels = input.bool(true, "Tampilkan garis Support/Resistance/TR1/TR2/Stop/Entry", group=grpShortTerm)
+srLookback = input.int(10, "Lookback S/R jangka pendek (bar)", minval=5, maxval=50, group=grpShortTerm, tooltip="Support/Resistance/Stop dihitung dari N bar terakhir ini; TR1 adalah titik proyeksi TR Forecast pada bar ke-N yang sama.")
+
+// ---------- Bold-unicode helper (matches the "𝗧𝗥 𝗙𝗢𝗥𝗘𝗖𝗔𝗦𝗧" style already used in the
+// forecast panels below). Pine labels have no native bold property; this substitutes
+// uppercase letters and digits with Mathematical Sans-Serif Bold Unicode equivalents.
+// Placed here (before every other module) so both the Elite Entry-Buy/Exit-Sell
+// notations and the Forecast module's new level tags can both call it.
+var array<string> boldSrc = array.from("A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","0","1","2","3","4","5","6","7","8","9")
+var array<string> boldDst = array.from("𝗔","𝗕","𝗖","𝗗","𝗘","𝗙","𝗚","𝗛","𝗜","𝗝","𝗞","𝗟","𝗠","𝗡","𝗢","𝗣","𝗤","𝗥","𝗦","𝗧","𝗨","𝗩","𝗪","𝗫","𝗬","𝗭","𝟬","𝟭","𝟮","𝟯","𝟰","𝟱","𝟲","𝟳","𝟴","𝟵")
+f_bold(txt) =>
+    result = ""
+    for ci = 0 to str.length(txt) - 1
+        ch = str.substring(txt, ci, ci + 1)
+        idx = array.indexof(boldSrc, ch)
+        result := result + (idx >= 0 ? array.get(boldDst, idx) : ch)
+    result
+
+// ---------- Shared base calculations (computed once per bar, used by every module below)
+ema10 = ta.ema(close, 10)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+sma200 = ta.sma(close, 200)
+rsi14 = ta.rsi(close, 14)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+[diPlus, diMinus, adx14] = ta.dmi(14, 14)
+atr14 = ta.atr(14)
+volMA20 = ta.sma(volume, 20)
+rvol = volMA20 > 0 ? volume / volMA20 : 0.0
+avgValue20 = ta.sma(close * volume, 20)
+
+rng = math.max(high - low, syminfo.mintick)
+body = math.abs(close - open)
+bodyRatio = body / rng
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+clv = (close - low) / rng
+closeUpper60 = clv >= 0.60
+
+// One confirmed Weekly call, shared by the Elite decision engine (wBull/wBear/
+// wState) and the Forecast module (wRegime, derived below — not recomputed).
+[wClose, wEma20, wEma20Prev, wRsi] = request.security(syminfo.tickerid, "W", [close[1], ta.ema(close, 20)[1], ta.ema(close, 20)[2], ta.rsi(close, 14)[1]], lookahead=barmerge.lookahead_on)
+wBull = wClose > wEma20 and wEma20 > wEma20Prev and wRsi > 50
+wBear = wClose < wEma20 and wEma20 < wEma20Prev and wRsi < 45
+wState = wBull ? "BULL" : wBear ? "BEAR" : "NEUTRAL"
+
+// ---------- V2.1: candlestick pattern recognition (feeds acc/dist scores below)
+bodyPrev = math.abs(close[1] - open[1])
+body2 = math.abs(close[2] - open[2])
+isBullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1] and body > bodyPrev
+isBearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1] and body > bodyPrev
+isHammer = lowerWick >= body * 2 and upperWick <= body * 0.5 and bodyRatio <= 0.4
+isShootingStar = upperWick >= body * 2 and lowerWick <= body * 0.5 and bodyRatio <= 0.4
+isDoji = bodyRatio <= 0.08
+smallMid = math.abs(close[1] - open[1]) <= body2 * 0.35
+isMorningStar = close[2] < open[2] and body2 > 0 and smallMid and close > open and close > (open[2] + close[2]) / 2
+isEveningStar = close[2] > open[2] and body2 > 0 and smallMid and close < open and close < (open[2] + close[2]) / 2
+isPiercing = close[1] < open[1] and close > open and open < close[1] and close > (open[1] + close[1]) / 2 and close < open[1]
+isDarkCloud = close[1] > open[1] and close < open and open > close[1] and close < (open[1] + close[1]) / 2 and close > open[1]
+
+candleBullScore = (isMorningStar ? 2 : 0) + (isBullEngulf ? 2 : 0) + (isPiercing ? 1 : 0) + (isHammer ? 1 : 0)
+candleBearScore = (isEveningStar ? 2 : 0) + (isBearEngulf ? 2 : 0) + (isDarkCloud ? 1 : 0) + (isShootingStar ? 1 : 0)
+candleName = isMorningStar ? "Morning Star" : isBullEngulf ? "Bull Engulf" : isPiercing ? "Piercing" : isHammer ? "Hammer" : isEveningStar ? "Evening Star" : isBearEngulf ? "Bear Engulf" : isDarkCloud ? "Dark Cloud" : isShootingStar ? "Shooting Star" : isDoji ? "Doji" : "-"
+
+// ---------- Chart Patterns: state (kept ahead of Elite scoring so its bias can feed it)
+type Pat
+    int   kind
+    int   dir
+    float neck
+    float neckSlope
+    int   neckX
+    float apex
+    int   apexBar
+    float target
+    float invalid
+    float ext
+    int   confBar
+    int   bornBar
+    int   coreS
+    int   trailB
+    bool  confirmed
+    int   result
+    array<int>   px
+    array<float> py
+    array<line>  segs
+    line  neckLn
+    line  tgtLn
+    box   zone
+    label tag
+    label resTag
+
+var pats  = array.new<Pat>()
+var zzB = array.new<int>()
+var zzP = array.new<float>()
+var zzD = array.new<int>()
+var hits = array.new<int>(4, 0)
+var res  = array.new<int>(4, 0)
+
+// Shares atr14 from the shared base-calculations block instead of recomputing.
+tol = atr14 * tolIn
+buf = atr14 * bufIn
+
+cpPh = ta.pivothigh(pivLen, pivLen)
+cpPl = ta.pivotlow(pivLen, pivLen)
+
+f_name(int k) =>
+    k == 1 ? "Double Top" : k == 2 ? "Double Bottom" : k == 3 ? "Head & Shoulders" : "Inverse Head & Shoulders"
+
+f_enabled(int k) =>
+    k == 1 ? showDT : k == 2 ? showDB : k == 3 ? showHS : showIHS
+
+f_neckAt(Pat p, int b) =>
+    p.neck + p.neckSlope * (b - p.neckX)
+
+//--- zigzag push, returns true only when a genuinely new pivot is appended
+f_zzPush(int b, float pr, int d) =>
+    n = array.size(zzD)
+    appended = false
+    if n == 0
+        array.push(zzB, b)
+        array.push(zzP, pr)
+        array.push(zzD, d)
+        appended := true
+    else
+        li = n - 1
+        if array.get(zzD, li) == d
+            lp = array.get(zzP, li)
+            if (d == 1 and pr > lp) or (d == -1 and pr < lp)
+                array.set(zzP, li, pr)
+                array.set(zzB, li, b)
+        else
+            array.push(zzB, b)
+            array.push(zzP, pr)
+            array.push(zzD, d)
+            appended := true
+    while array.size(zzD) > 20
+        array.shift(zzB)
+        array.shift(zzP)
+        array.shift(zzD)
+    appended
+
+f_newPat(int kind, int dir, float neck, float neckSlope, int neckX, float apex, int apexBar, float invalid, float ext) =>
+    p = Pat.new()
+    p.kind := kind
+    p.dir := dir
+    p.neck := neck
+    p.neckSlope := neckSlope
+    p.neckX := neckX
+    p.apex := apex
+    p.apexBar := apexBar
+    p.invalid := invalid
+    p.ext := ext
+    p.bornBar := bar_index
+    p.confirmed := false
+    p.result := 0
+    p.px := array.new<int>()
+    p.py := array.new<float>()
+    p.segs := array.new<line>()
+    array.push(pats, p)
+    p
+
+f_addPt(Pat p, int b, float v) =>
+    array.push(p.px, b)
+    array.push(p.py, v)
+
+//--- one pattern per region: reject a new span that overlaps an existing one
+f_regionTaken(int s, int e) =>
+    taken = false
+    sp = e - s
+    i = 0
+    while i < array.size(pats) and not taken
+        p = array.get(pats, i)
+        m = array.size(p.px)
+        if m >= 2
+            ps = array.get(p.px, 0)
+            pe = array.get(p.px, m - 1)
+            ov = math.min(e, pe) - math.max(s, ps)
+            if ov > 0.15 * math.min(sp, pe - ps)
+                taken := true
+        i += 1
+    taken
+
+//--- bar where price actually crosses the neckline level, walking back from the first peak
+f_crossBar(int fromBar, int toBar, float level, bool bear, int maxBack, float slp) =>
+    cb = -1
+    done = false
+    lim = math.max(1, math.min(maxBack, fromBar - toBar))
+    for k = 1 to lim
+        o = bar_index - fromBar + k
+        lv = level - slp * k
+        if not done and o >= 0 and o <= 4990 and ((bear and low[o] <= lv) or ((not bear) and high[o] >= lv))
+            cb := fromBar - k
+            done := true
+    cb
+
+//--- match the newest pivots against templates (dirs alternate by construction)
+f_matchHigh() =>
+    n = array.size(zzD)
+    matched5 = false
+    if n >= 5 and showHS
+        ls = array.get(zzP, n - 5)
+        t1 = array.get(zzP, n - 4)
+        hd = array.get(zzP, n - 3)
+        t2 = array.get(zzP, n - 2)
+        rs = array.get(zzP, n - 1)
+        lsBar = array.get(zzB, n - 5)
+        legW = math.max(3, int((array.get(zzB, n - 1) - lsBar) / 4))
+        b1 = array.get(zzB, n - 4)
+        b2 = array.get(zzB, n - 2)
+        slope = (t2 - t1) / (b2 - b1)
+        crossB = f_crossBar(lsBar, array.get(zzB, math.max(0, n - 6)), t1 + slope * (lsBar - b1), true, 2 * legW, slope)
+        startB = crossB >= 0 ? crossB : (n >= 6 ? array.get(zzB, n - 6) : lsBar)
+        trailBar = array.get(zzB, n - 1) + legW
+        if hd > ls + tol and hd > rs + tol and math.abs(ls - rs) <= 2 * tol and math.abs(t1 - t2) <= 0.35 * (hd - math.min(t1, t2)) and not f_regionTaken(startB, trailBar)
+            p = f_newPat(3, -1, t1, slope, b1, hd, array.get(zzB, n - 3), rs, hd)
+            p.coreS := startB
+            p.trailB := trailBar
+            if crossB >= 0
+                f_addPt(p, crossB, t1 + slope * (crossB - b1))
+            else if n >= 6
+                f_addPt(p, array.get(zzB, n - 6), array.get(zzP, n - 6))
+            f_addPt(p, lsBar, ls)
+            f_addPt(p, b1, t1)
+            f_addPt(p, array.get(zzB, n - 3), hd)
+            f_addPt(p, b2, t2)
+            f_addPt(p, array.get(zzB, n - 1), rs)
+            matched5 := true
+    if n >= 3 and showDT and not matched5
+        h1 = array.get(zzP, n - 3)
+        l1 = array.get(zzP, n - 2)
+        h2 = array.get(zzP, n - 1)
+        h1Bar = array.get(zzB, n - 3)
+        legW = math.max(3, int((array.get(zzB, n - 1) - h1Bar) / 2))
+        crossB = f_crossBar(h1Bar, array.get(zzB, math.max(0, n - 4)), l1, true, 2 * legW, 0.0)
+        startB = crossB >= 0 ? crossB : (n >= 4 ? array.get(zzB, n - 4) : h1Bar)
+        trailBar = array.get(zzB, n - 1) + legW
+        if math.abs(h1 - h2) <= tol and (dblMode == "Any" or h2 <= h1 + tol * 0.25) and math.min(h1, h2) - l1 > 1.5 * tol and not f_regionTaken(startB, trailBar)
+            ex = math.max(h1, h2)
+            p = f_newPat(1, -1, l1, 0.0, array.get(zzB, n - 2), (h1 + h2) / 2, array.get(zzB, n - 1), ex, ex)
+            p.coreS := startB
+            p.trailB := trailBar
+            if crossB >= 0
+                f_addPt(p, crossB, l1)
+            else if n >= 4
+                f_addPt(p, array.get(zzB, n - 4), array.get(zzP, n - 4))
+            f_addPt(p, h1Bar, h1)
+            f_addPt(p, array.get(zzB, n - 2), l1)
+            f_addPt(p, array.get(zzB, n - 1), h2)
+
+f_matchLow() =>
+    n = array.size(zzD)
+    matched5 = false
+    if n >= 5 and showIHS
+        ls = array.get(zzP, n - 5)
+        t1 = array.get(zzP, n - 4)
+        hd = array.get(zzP, n - 3)
+        t2 = array.get(zzP, n - 2)
+        rs = array.get(zzP, n - 1)
+        lsBar = array.get(zzB, n - 5)
+        legW = math.max(3, int((array.get(zzB, n - 1) - lsBar) / 4))
+        b1 = array.get(zzB, n - 4)
+        b2 = array.get(zzB, n - 2)
+        slope = (t2 - t1) / (b2 - b1)
+        crossB = f_crossBar(lsBar, array.get(zzB, math.max(0, n - 6)), t1 + slope * (lsBar - b1), false, 2 * legW, slope)
+        startB = crossB >= 0 ? crossB : (n >= 6 ? array.get(zzB, n - 6) : lsBar)
+        trailBar = array.get(zzB, n - 1) + legW
+        if hd < ls - tol and hd < rs - tol and math.abs(ls - rs) <= 2 * tol and math.abs(t1 - t2) <= 0.35 * (math.max(t1, t2) - hd) and not f_regionTaken(startB, trailBar)
+            p = f_newPat(4, 1, t1, slope, b1, hd, array.get(zzB, n - 3), rs, hd)
+            p.coreS := startB
+            p.trailB := trailBar
+            if crossB >= 0
+                f_addPt(p, crossB, t1 + slope * (crossB - b1))
+            else if n >= 6
+                f_addPt(p, array.get(zzB, n - 6), array.get(zzP, n - 6))
+            f_addPt(p, lsBar, ls)
+            f_addPt(p, b1, t1)
+            f_addPt(p, array.get(zzB, n - 3), hd)
+            f_addPt(p, b2, t2)
+            f_addPt(p, array.get(zzB, n - 1), rs)
+            matched5 := true
+    if n >= 3 and showDB and not matched5
+        l1 = array.get(zzP, n - 3)
+        h1 = array.get(zzP, n - 2)
+        l2 = array.get(zzP, n - 1)
+        l1Bar = array.get(zzB, n - 3)
+        legW = math.max(3, int((array.get(zzB, n - 1) - l1Bar) / 2))
+        crossB = f_crossBar(l1Bar, array.get(zzB, math.max(0, n - 4)), h1, false, 2 * legW, 0.0)
+        startB = crossB >= 0 ? crossB : (n >= 4 ? array.get(zzB, n - 4) : l1Bar)
+        trailBar = array.get(zzB, n - 1) + legW
+        if math.abs(l1 - l2) <= tol and (dblMode == "Any" or l2 >= l1 - tol * 0.25) and h1 - math.max(l1, l2) > 1.5 * tol and not f_regionTaken(startB, trailBar)
+            ex = math.min(l1, l2)
+            p = f_newPat(2, 1, h1, 0.0, array.get(zzB, n - 2), (l1 + l2) / 2, array.get(zzB, n - 1), ex, ex)
+            p.coreS := startB
+            p.trailB := trailBar
+            if crossB >= 0
+                f_addPt(p, crossB, h1)
+            else if n >= 4
+                f_addPt(p, array.get(zzB, n - 4), array.get(zzP, n - 4))
+            f_addPt(p, l1Bar, l1)
+            f_addPt(p, array.get(zzB, n - 2), h1)
+            f_addPt(p, array.get(zzB, n - 1), l2)
+
+//--- first bar after the last pivot where a candle actually crosses the neckline
+f_crossFwd(Pat p) =>
+    mm = array.size(p.px)
+    lastB = array.get(p.px, mm - 1)
+    tb = p.confBar
+    done = false
+    lim = math.max(1, p.confBar - lastB)
+    for k = 1 to lim
+        b = lastB + k
+        o = bar_index - b
+        lv = f_neckAt(p, b)
+        if not done and o >= 0 and ((p.dir == -1 and low[o] <= lv) or (p.dir == 1 and high[o] >= lv))
+            tb := b
+            done := true
+    tb
+
+f_draw(Pat p) =>
+    col = p.dir == -1 ? bearCol : bullCol
+    tb = f_crossFwd(p)
+    f_addPt(p, tb, f_neckAt(p, tb))
+    p.trailB := math.max(p.trailB, tb)
+    m = array.size(p.px)
+    pmin = array.get(p.py, 0)
+    pmax = pmin
+    for k = 0 to m - 1
+        v = array.get(p.py, k)
+        pmin := math.min(pmin, v)
+        pmax := math.max(pmax, v)
+    if m >= 2
+        for k = 0 to m - 2
+            ln = line.new(array.get(p.px, k), array.get(p.py, k), array.get(p.px, k + 1), array.get(p.py, k + 1), color = col, width = 3)
+            array.push(p.segs, ln)
+    p.neckLn := line.new(p.coreS, f_neckAt(p, p.coreS), p.trailB, f_neckAt(p, p.trailB), color = col, style = line.style_dashed, width = 2)
+    if showTgt
+        p.tgtLn := line.new(p.confBar, p.target, p.confBar + tgtLen, p.target, color = color.new(col, 40), style = line.style_dotted, width = 1)
+    tagY = p.dir == -1 ? pmax : pmin
+    p.tag := label.new(p.apexBar, tagY, f_name(p.kind), style = p.dir == -1 ? label.style_label_down : label.style_label_up, color = color.new(col, 15), textcolor = color.white, size = txtSize)
+
+f_delete(Pat p) =>
+    if array.size(p.segs) > 0
+        for k = 0 to array.size(p.segs) - 1
+            line.delete(array.get(p.segs, k))
+    line.delete(p.neckLn)
+    line.delete(p.tgtLn)
+    box.delete(p.zone)
+    label.delete(p.tag)
+    label.delete(p.resTag)
+
+// ---------- Chart Patterns: engine, state mutates on closed bars only
+bearConf = false
+bullConf = false
+tgtHit   = false
+patFail  = false
+
+if barstate.isconfirmed
+    if not na(cpPh)
+        if f_zzPush(bar_index - pivLen, cpPh, 1)
+            f_matchHigh()
+    if not na(cpPl)
+        if f_zzPush(bar_index - pivLen, cpPl, -1)
+            f_matchLow()
+
+    i = 0
+    while i < array.size(pats)
+        p = array.get(pats, i)
+        gone = false
+        if not p.confirmed
+            neckNow = f_neckAt(p, bar_index)
+            vtol = tol + atr14 * voidTol
+            if p.dir == -1
+                if high > p.ext + vtol
+                    gone := true
+                else if (confMode == "Wick" ? low : close) < neckNow - buf
+                    p.confirmed := true
+            else
+                if low < p.ext - vtol
+                    gone := true
+                else if (confMode == "Wick" ? high : close) > neckNow + buf
+                    p.confirmed := true
+            if not gone and not p.confirmed and bar_index - p.bornBar > maxWait
+                gone := true
+            if p.confirmed
+                p.confBar := bar_index
+                neckC = f_neckAt(p, bar_index)
+                height = p.dir == -1 ? p.apex - f_neckAt(p, p.apexBar) : f_neckAt(p, p.apexBar) - p.apex
+                p.target := p.dir == -1 ? neckC - height : neckC + height
+                f_draw(p)
+                if p.dir == -1
+                    bearConf := true
+                else
+                    bullConf := true
+        else if p.result == 0
+            if p.dir == -1
+                if low <= p.target
+                    p.result := 1
+                else if close >= p.invalid
+                    p.result := 2
+            else
+                if high >= p.target
+                    p.result := 1
+                else if close <= p.invalid
+                    p.result := 2
+            if p.result == 0 and bar_index - p.confBar > trackBars
+                p.result := 3
+            if p.result == 1 or p.result == 2 or p.result == 3
+                ki = p.kind - 1
+                array.set(res, ki, array.get(res, ki) + 1)
+                if p.result == 1
+                    array.set(hits, ki, array.get(hits, ki) + 1)
+                    col = p.dir == -1 ? bearCol : bullCol
+                    if showTgt and not na(p.tgtLn)
+                        line.set_x2(p.tgtLn, bar_index)
+                    if showOutcome
+                        p.resTag := label.new(bar_index, p.target, "✓ " + hitTxt, style = p.dir == -1 ? label.style_label_up : label.style_label_down, color = color.new(col, 100), textcolor = col, size = resSize)
+                    tgtHit := true
+                else if p.result == 2
+                    if showOutcome
+                        p.resTag := label.new(bar_index, p.invalid, "✕ " + failTxt, style = p.dir == -1 ? label.style_label_down : label.style_label_up, color = color.new(color.gray, 100), textcolor = color.gray, size = resSize)
+                    patFail := true
+        if gone
+            f_delete(p)
+            array.remove(pats, i)
+        else
+            i += 1
+
+    //--- cap confirmed patterns, oldest first
+    cnt = 0
+    if array.size(pats) > 0
+        for k = 0 to array.size(pats) - 1
+            if array.get(pats, k).confirmed
+                cnt += 1
+    while cnt > maxKeep
+        idx = -1
+        j = 0
+        while j < array.size(pats) and idx < 0
+            if array.get(pats, j).confirmed
+                idx := j
+            j += 1
+        if idx >= 0
+            f_delete(array.get(pats, idx))
+            array.remove(pats, idx)
+        cnt -= 1
+
+// ---------- Cross-wire the Chart Pattern engine's bias into Elite scoring below.
+// Finds the most-recently-confirmed, still-unresolved pattern and its age in bars.
+patBiasDir = 0
+patBiasAge = 999999
+if array.size(pats) > 0
+    for k = 0 to array.size(pats) - 1
+        pp = array.get(pats, k)
+        if pp.confirmed and pp.result == 0
+            age = bar_index - pp.confBar
+            if age < patBiasAge
+                patBiasAge := age
+                patBiasDir := pp.dir
+patternBearBlock = patBiasDir == -1 and patBiasAge <= patBlockBars
+patternBullBoost = patBiasDir == 1 and patBiasAge <= patBoostBars
+
+// ---------- Elite 20D: confirmed market structure (bar indices tracked for reference lines)
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+var float lastPH = na
+var int   lastPHBar = na
+var float prevPH = na
+var int   prevPHBar = na
+var float lastPL = na
+var int   lastPLBar = na
+var float prevPL = na
+var int   prevPLBar = na
+if not na(ph)
+    prevPH := lastPH
+    prevPHBar := lastPHBar
+    lastPH := ph
+    lastPHBar := bar_index - pivotLen
+if not na(pl)
+    prevPL := lastPL
+    prevPLBar := lastPLBar
+    lastPL := pl
+    lastPLBar := bar_index - pivotLen
+
+hh = not na(lastPH) and not na(prevPH) and lastPH > prevPH
+hl = not na(lastPL) and not na(prevPL) and lastPL > prevPL
+lh = not na(lastPH) and not na(prevPH) and lastPH < prevPH
+ll = not na(lastPL) and not na(prevPL) and lastPL < prevPL
+bosBull = not na(lastPH) and close > lastPH and close[1] <= lastPH
+bosBear = not na(lastPL) and close < lastPL and close[1] >= lastPL
+structureBull = (hh and hl) or (hl and close > ema20)
+structureBear = (lh and ll) or bosBear
+structureText = bosBull ? "BOS+" : bosBear ? "BOS-" : structureBull ? "HH-HL" : structureBear ? "LH-LL" : "MIXED"
+
+// Last two confirmed pivots are stable and lightweight chart levels.
+s1 = lastPL
+s2 = prevPL
+r1 = lastPH
+r2 = prevPH
+
+// ---------- Elite 20D: trend regime (ADX confirmation added to BULL STRONG)
+ema20Up = ema20 > ema20[1]
+ema50Up = ema50 > ema50[1]
+dailyBullStrong = close > ema20 and ema20 > ema50 and ema20Up and ema50Up and close > sma200 and rsi14 > 50 and adx14 > 20
+dailyBullEarly = close > ema20 and ema20Up and (bosBull or hl)
+dailyBear = close < ema20 and ema20 < ema50 and not ema20Up and rsi14 < 45
+dailySideways = adx14 < 20 and math.abs(ema20 - ema50) <= atr14 * 0.5
+trendState = dailyBullStrong ? "BULL STRONG" : dailyBullEarly ? "BULL EARLY" : dailyBear ? "BEAR" : dailySideways ? "SIDEWAYS" : "NEUTRAL"
+
+// ---------- Elite 20D: location, zones and liquidity
+liquid = avgValue20 >= minAvgValue and volMA20 > 0 and atr14 > 0
+nearSupport = not na(s1) and math.abs(close - s1) <= atr14 * 0.75
+nearResistance = not na(r1) and math.abs(close - r1) <= atr14 * 0.75
+emaConfluence = not na(s1) and math.abs(s1 - ema20) <= atr14 * 0.5
+zoneCenter = emaConfluence ? (s1 + ema20) / 2 : not na(s1) ? s1 : ema20
+buyZoneLow = zoneCenter - zoneATR * atr14
+buyZoneHigh = zoneCenter + zoneATR * atr14
+inBuyZone = low <= buyZoneHigh and high >= buyZoneLow
+extensionATR = atr14 > 0 ? (close - ema20) / atr14 : 0.0
+overextended = extensionATR > maxExtensionATR or (close > ema20 and (close - ema20) / ema20 * 100 > 10)
+
+// ---------- Elite 20D: price-volume accumulation/distribution proxy scores
+// Candlestick pattern score and Chart Pattern bias feed in directly.
+int accScore = 0
+accScore += clv >= 0.55 ? 1 : 0
+accScore += clv >= 0.70 ? 1 : 0
+accScore += rvol >= 1.20 ? 1 : 0
+accScore += rvol >= rvolMedium ? 1 : 0
+accScore += rvol >= rvolLarge ? 1 : 0
+accScore += lowerWick > body ? 1 : 0
+accScore += close > open and bodyRatio >= 0.55 ? 1 : 0
+accScore += nearSupport or inBuyZone ? 2 : 0
+accScore += structureBull ? 1 : 0
+accScore += bosBull ? 2 : 0
+accScore += candleBullScore
+accScore += patternBullBoost ? 2 : 0
+accScore -= overextended ? 2 : 0
+accScore -= nearResistance and not bosBull ? 1 : 0
+
+int distScore = 0
+distScore += clv <= 0.45 ? 1 : 0
+distScore += clv <= 0.30 ? 1 : 0
+distScore += rvol >= 1.20 ? 1 : 0
+distScore += rvol >= rvolMedium ? 1 : 0
+distScore += rvol >= rvolLarge ? 1 : 0
+distScore += upperWick > body ? 1 : 0
+distScore += close < open and bodyRatio >= 0.55 ? 1 : 0
+distScore += nearResistance ? 2 : 0
+distScore += overextended ? 1 : 0
+distScore += lh ? 1 : 0
+distScore += bosBear ? 2 : 0
+distScore += candleBearScore
+distScore += (patBiasDir == -1 and patBiasAge <= patBoostBars) ? 2 : 0
+distScore -= nearSupport and not bosBear ? 1 : 0
+
+accClass = accScore >= 8 and rvol >= rvolLarge ? 3 : accScore >= 5 and rvol >= rvolMedium ? 2 : accScore >= 3 and rvol >= rvolSmall ? 1 : 0
+distClass = distScore >= 8 and rvol >= rvolLarge ? 3 : distScore >= 5 and rvol >= rvolMedium ? 2 : distScore >= 3 and rvol >= rvolSmall ? 1 : 0
+
+absorptionBull = rvol >= rvolLarge and bodyRatio < 0.35 and lowerWick > body and clv >= 0.55 and nearSupport
+absorptionBear = rvol >= rvolLarge and bodyRatio < 0.35 and upperWick > body and clv <= 0.45 and nearResistance
+volumeAnomaly = rvol >= rvolAnomaly
+churn = rvol >= rvolLarge and bodyRatio < 0.30 and rng <= atr14 * 1.2
+wideRangeBull = rng >= atr14 * 1.8 and rvol >= rvolMedium and close > open and clv >= 0.70
+wideRangeBear = rng >= atr14 * 1.8 and rvol >= rvolMedium and close < open and clv <= 0.30
+accCluster = math.sum(accClass > 0 ? 1.0 : 0.0, 5) >= 2 and not bosBear
+distCluster = math.sum(distClass > 0 ? 1.0 : 0.0, 5) >= 2 and not bosBull
+
+// ---------- Elite 20D: setups and traps
+breakout = not na(r1) and close > r1 + atr14 * 0.10 and close[1] <= r1 and rvol >= rvolMedium and close > open and closeUpper60 and upperWick <= math.max(body, syminfo.mintick)
+barsFromBreakout = ta.barssince(breakout)
+retest = not na(r1) and barsFromBreakout >= 1 and barsFromBreakout <= 5 and low <= r1 + atr14 * zoneATR and close > r1 and close > open
+pullback = (dailyBullStrong or dailyBullEarly) and structureBull and inBuyZone and close > open and clv >= 0.60 and rvol >= 1.0
+reversal = nearSupport and hl and bosBull and rvol >= rvolMedium
+
+barsFromBosBull = ta.barssince(bosBull)
+bullTrap = not na(r1) and barsFromBosBull >= 1 and barsFromBosBull <= trapWindow and close < r1 and (rvol >= 1.2 or upperWick > body)
+upthrust = not na(r1) and high > r1 and close < r1 and upperWick > body and clv <= 0.35 and rvol >= rvolMedium
+bearTrap = not na(s1) and low < s1 and close > s1 and lowerWick > body and rvol >= 1.2
+gapTrap = not na(r1) and open > r1 and close < r1 and clv <= 0.35 and rvol >= rvolMedium
+exhaustion = extensionATR > maxExtensionATR and rsi14 > 75 and rvol >= rvolLarge and (wideRangeBull or upperWick > body)
+trapText = bullTrap ? "BTRAP" : bearTrap ? "BRTRAP" : upthrust ? "UT" : gapTrap ? "GTRAP" : exhaustion ? "EXH" : churn ? "CHURN" : volumeAnomaly ? "V!" : "NONE"
+
+// Reversal confluence — catches a fresh bounce off support/lows before the
+// weekly trend gate (which lags) turns bullish. Independent of weeklyAllowed/trendAllowed.
+reversalConfluence = liquid and (nearSupport or patBiasDir == 1) and candleBullScore >= 2 and rvol >= rvolMedium and not bullTrap and not overextended
+
+// ---------- Elite 20D: entry, stop, targets and sizing
+setupCode = retest ? "RT" : pullback ? "PB" : breakout ? "BO" : reversal ? "RV" : reversalConfluence ? "RV2" : "NONE"
+candidateEntry = close
+autoStopBase = retest ? math.min(low, nz(r1, low)) : breakout ? math.min(low, nz(r1, low)) : nz(s1, low)
+autoStop = autoStopBase - stopBufferATR * atr14
+candidateRisk = math.max(candidateEntry - autoStop, syminfo.mintick)
+stopPct = candidateRisk / candidateEntry * 100
+candidateTP1 = candidateEntry + candidateRisk * 1.5
+candidateTP2 = candidateEntry + candidateRisk * 2.0
+candidateTP3 = candidateEntry + candidateRisk * 3.0
+rrToR1 = not na(r1) and r1 > candidateEntry ? (r1 - candidateEntry) / candidateRisk : na
+rrToR2 = not na(r2) and r2 > candidateEntry ? (r2 - candidateEntry) / candidateRisk : na
+rrAvailable = not na(rrToR1) and not na(rrToR2) ? math.min(rrToR1, rrToR2) : not na(rrToR1) ? rrToR1 : not na(rrToR2) ? rrToR2 : 99.0
+rrOK = rrAvailable >= minRR or rrAvailable == 99.0
+stopOK = autoStop < candidateEntry and stopPct <= maxStopPct
+riskRupiah = capital * riskPct / 100
+sharesRaw = candidateRisk > 0 ? math.floor(riskRupiah / candidateRisk) : 0
+lots = math.floor(sharesRaw / 100)
+
+momentumScore = (rsi14 > 50 ? 1 : 0) + (rsi14 > rsi14[1] ? 1 : 0) + (macdHist > macdHist[1] ? 1 : 0) + (diPlus > diMinus ? 1 : 0)
+weeklyAllowed = not wBear
+trendAllowed = dailyBullStrong or dailyBullEarly
+setupValid = breakout or retest or pullback or reversal
+accConfirmed = accClass >= 2 or accCluster or breakout
+hardGates = liquid and weeklyAllowed and trendAllowed and (structureBull or bosBull) and setupValid and accConfirmed and momentumScore >= 2 and not overextended and not bullTrap and not upthrust and not gapTrap and rrOK and stopOK and not patternBearBlock and barstate.isconfirmed
+
+int buyScore = 0
+buyScore += wBull ? 1 : 0
+buyScore += dailyBullStrong ? 2 : dailyBullEarly ? 1 : 0
+buyScore += structureBull ? 2 : 0
+buyScore += inBuyZone or retest ? 1 : 0
+buyScore += setupValid ? 1 : 0
+buyScore += rvol >= 1.2 ? 1 : 0
+buyScore += momentumScore >= 2 ? 1 : 0
+buyScore += rrOK ? 1 : 0
+buyScore += candleBullScore >= 2 ? 1 : 0
+
+// buySignalCore is the original trend-following path; buySignalReversal is the
+// counter-trend path that does not require weeklyAllowed/trendAllowed — it fires
+// on support + bullish candlestick + volume confluence instead.
+buySignalCore = hardGates and buyScore >= 8
+buySignalReversal = not buySignalCore and reversalConfluence and rrOK and stopOK and not upthrust and not gapTrap and not patternBearBlock and barstate.isconfirmed
+buySignal = buySignalCore or buySignalReversal
+preBuy = not buySignal and liquid and weeklyAllowed and trendAllowed and structureBull and (accClass >= 2 or accCluster) and not overextended and not bullTrap
+
+// ---------- Elite 20D: owned-position management
+entryPrice = avgBuy > 0 ? avgBuy : candidateEntry
+ownedAutoStop = nz(s1, entryPrice - atr14 * 2) - stopBufferATR * atr14
+initialStop = initialStopInput > 0 ? initialStopInput : ownedAutoStop
+var float highestSinceEntry = na
+inDateWindow = time >= entryTime
+if hasPosition and inDateWindow
+    highestSinceEntry := na(highestSinceEntry) ? close : math.max(highestSinceEntry, close)
+else
+    highestSinceEntry := na
+atrTrail = nz(highestSinceEntry, close) - 2.0 * atr14
+structureTrail = nz(s1, initialStop) - stopBufferATR * atr14
+trailStop = math.max(initialStop, math.max(atrTrail, structureTrail))
+barsSinceEntry = ta.barssince(time[1] < entryTime and time >= entryTime)
+barsHeld = hasPosition and inDateWindow ? barsSinceEntry : 0
+positionRisk = math.max(entryPrice - initialStop, syminfo.mintick)
+ownedTP1 = entryPrice + positionRisk * 1.5
+ownedTP2 = entryPrice + positionRisk * 2.0
+ownedTP3 = entryPrice + positionRisk * 3.0
+hardStopHit = hasPosition and low <= initialStop
+trailStopHit = hasPosition and close <= trailStop and trailStop > initialStop
+structureExit = hasPosition and bosBear and close < nz(s1, close)
+falseBreakExit = hasPosition and bullTrap
+tp1Hit = hasPosition and high >= ownedTP1 and high[1] < ownedTP1
+tp2Hit = hasPosition and high >= ownedTP2 and high[1] < ownedTP2
+tp3Hit = hasPosition and high >= ownedTP3 and high[1] < ownedTP3
+reduce50 = hasPosition and distClass >= 3 and (distCluster or momentumScore <= 1)
+reduce25 = hasPosition and not reduce50 and distClass >= 2 and (distCluster or momentumScore <= 2)
+timeExit = hasPosition and barsHeld >= 20 and close < ownedTP1
+lowProgress = hasPosition and barsHeld >= 10 and close < entryPrice + positionRisk * 0.5
+
+// ---------- Elite 20D: single final decision (priority prevents contradictory callbacks)
+string decision = "SCAN"
+if hasPosition
+    decision := hardStopHit ? "CL" : trailStopHit ? "TSTOP-X" : structureExit ? "BOS-X" : falseBreakExit ? "FBO-X" : tp3Hit ? "TP-FINAL" : tp2Hit ? "TP2" : tp1Hit ? "TP1" : reduce50 ? "RED50" : reduce25 ? "RED25" : timeExit ? "TIME-X" : lowProgress ? "HOLD?" : "HOLD"
+else
+    decision := not liquid ? "NO-T" : wBear or dailyBear ? "WAIT-T" : bullTrap or upthrust or gapTrap ? "NO-BUY" : overextended ? "EXT" : not structureBull and not reversalConfluence ? "WAIT-S" : not setupValid and not reversalConfluence ? (preBuy ? "PRE-BUY" : "WAIT-Z") : not rrOK or not stopOK ? "NO-RR" : buySignal ? "BUY-" + setupCode : "WAIT-V"
+
+// ---------- Entry-Buy / Exit-Sell annotations, reusing the decision engine above.
+// Diagonal reference line follows the prior swing pivot into the signal bar, width 2,
+// colored bullish/bearish to match the trend direction (bullCol/bearCol reused from
+// the Chart Pattern style inputs so the whole script shares one color language).
+var line[] sigLines = array.new<line>()
+var label[] sigLabels = array.new<label>()
+f_capSig() =>
+    if array.size(sigLines) > 40
+        line.delete(array.shift(sigLines))
+    if array.size(sigLabels) > 40
+        label.delete(array.shift(sigLabels))
+
+entrySignal = buySignal and barstate.isconfirmed
+exitSignal = hasPosition and (hardStopHit or structureExit or falseBreakExit or trailStopHit) and barstate.isconfirmed
+
+if entrySignal
+    lbE = label.new(bar_index, low, f_bold("ENTRY-BUY: " + str.tostring(candidateEntry, format.mintick)), style = label.style_label_up, color = color.new(bullCol, notationTransparency), textcolor = color.white, size = size.small)
+    array.push(sigLabels, lbE)
+    if not na(lastPLBar)
+        lnE = line.new(lastPLBar, lastPL, bar_index, close, color = bullCol, width = 2)
+        array.push(sigLines, lnE)
+    f_capSig()
+
+if exitSignal
+    lbX = label.new(bar_index, high, f_bold("EXIT-SELL: " + str.tostring(close, format.mintick)), style = label.style_label_down, color = color.new(bearCol, notationTransparency), textcolor = color.white, size = size.small)
+    array.push(sigLabels, lbX)
+    if not na(lastPHBar)
+        lnX = line.new(lastPHBar, lastPH, bar_index, close, color = bearCol, width = 2)
+        array.push(sigLines, lnX)
+    f_capSig()
+
+// ============================================================================
+// ---------- IDX AI + Trend Forecast module ----------
+// ============================================================================
+f_clamp(_x, _lo, _hi) => math.max(_lo, math.min(_hi, _x))
+f_trendPathTarget(_base, _drift, _atr, _horizon) =>
+    projected = _base
+    for step = 1 to _horizon
+        decay = 1.0 - 0.35 * (step - 1) / math.max(_horizon - 1, 1)
+        cycle = math.sin(step * 1.618) * _atr * 0.10
+        projected := math.max(syminfo.mintick, projected + _drift * decay + cycle)
+    projected
+f_driftForPathTarget(_base, _target, _atr, _horizon) =>
+    decaySum = 0.0
+    cycleSum = 0.0
+    for step = 1 to _horizon
+        decaySum += 1.0 - 0.35 * (step - 1) / math.max(_horizon - 1, 1)
+        cycleSum += math.sin(step * 1.618) * _atr * 0.10
+    (_target - _base - cycleSum) / math.max(decaySum, 0.01)
+
+regNow = ta.linreg(close, regLen, 0)
+regPrev = ta.linreg(close, regLen, 1)
+regSlope = regNow - regPrev
+
+// Weekly regime reused directly from wBull/wBear above — not recomputed.
+wRegime = wBull ? 1.0 : wBear ? -1.0 : 0.0
+
+trendNorm = atr14 > 0 ? f_clamp(regSlope / atr14, -0.35, 0.35) : 0.0
+emaTrend = atr14 > 0 ? f_clamp((ema20 - ema20[5]) / (5 * atr14), -0.35, 0.35) : 0.0
+trendComponent = (trendNorm * 0.65 + emaTrend * 0.35 + wRegime * 0.08) * atr14
+momentumComponent = f_clamp((rsi14 - 50) / 50, -0.5, 0.5) * atr14 * 0.35
+
+buyPressure = clv >= 0.65 and rvol >= minRvol ? 1.0 : lowerWick > body and clv >= 0.55 ? 0.5 : 0.0
+sellPressure = clv <= 0.35 and rvol >= minRvol ? 1.0 : upperWick > body and clv <= 0.45 ? 0.5 : 0.0
+flowRaw = f_clamp(buyPressure - sellPressure, -1.0, 1.0)
+volumeComponent = flowRaw * atr14 * f_clamp(rvol, 0.5, 2.5) * 0.16
+meanRevComponent = (ema20 - close) / math.max(regLen, 1)
+
+// ---------- AI Forecast — pencocokan pola historis
+// Mencari N bar terakhir yang paling mirip dengan pola-pola historis (body,
+// range, wick atas/bawah dinormalisasi ATR), lalu mengambil rata-rata return
+// horizon-bar yang benar-benar terjadi setelah pola-pola analog tersebut.
+// (CC BY-NC-SA 4.0 — see license note in file header; internals unmodified.)
+enum izaDictInput
+    bodyF
+    crangeF
+    wickLowF
+    wickHighF
+
+var aiForecastY  = array.new<float>()
+var aiForecastD1 = matrix.new<float>()
+var aiForecastD2 = matrix.new<float>()
+var aiForecastD3 = matrix.new<float>()
+var aiForecastD4 = matrix.new<float>()
+var aiForecastH  = matrix.new<float>()
+var aiForecastL  = matrix.new<float>()
+var aiForecastO  = matrix.new<float>()
+var aiForecastC  = matrix.new<float>()
+
+var float aiForecastYhat    = na
+var float aiForecastConf    = na
+var float aiForecastDisp    = na
+var int   aiForecastNearest = int(na)
+
+aiForecastAtrNorm = ta.atr(100)
+aiForecastN = aiForecastPatternLen
+aiForecastNY = horizon
+aiForecastNTotal = aiForecastNY + aiForecastN
+
+f_aiForecastUpdateDict(mtx, kind) =>
+    x = array.new<float>(aiForecastNTotal)
+    for i = 0 to aiForecastNTotal - 1
+        if kind == izaDictInput.bodyF
+            array.set(x, -(i + 1), close[i] - open[i])
+        else if kind == izaDictInput.crangeF
+            array.set(x, -(i + 1), high[i] - low[i])
+        else if kind == izaDictInput.wickLowF
+            array.set(x, -(i + 1), math.min(close[i], open[i]) - low[i])
+        else
+            array.set(x, -(i + 1), high[i] - math.max(close[i], open[i]))
+    xCurrent = array.slice(x, aiForecastNTotal - aiForecastN, aiForecastNTotal)
+    xPrev = array.slice(x, 0, aiForecastN)
+    xCurrentNormed = matrix.new<float>(1, array.size(xCurrent), 0.0)
+    for i = 0 to array.size(xCurrent) - 1
+        matrix.set(xCurrentNormed, 0, i, array.get(xCurrent, i) / aiForecastAtrNorm)
+    xPrevNormed = array.new<float>(array.size(xPrev), 0.0)
+    for i = 0 to array.size(xPrev) - 1
+        array.set(xPrevNormed, i, array.get(xPrev, i) / aiForecastAtrNorm)
+    if mtx.rows() >= aiForecastDictSize
+        mtx.remove_row(0)
+    mtx.add_row(mtx.rows(), xPrevNormed)
+    xCurrentNormed
+
+f_aiForecastUpdateHist(mtx, sourceSeries) =>
+    x = array.new<float>(aiForecastNTotal)
+    for i = 0 to aiForecastNTotal - 1
+        array.set(x, -(i + 1), sourceSeries[i])
+    // Store the realized forward path after the matched pattern, not the
+    // pattern itself. This makes visual forecast candles auditable against its target.
+    xSeg = array.slice(x, aiForecastN, aiForecastNTotal)
+    if mtx.rows() >= aiForecastDictSize
+        mtx.remove_row(0)
+    mtx.add_row(mtx.rows(), xSeg)
+
+f_aiForecastDistance(x1, x2, x3, x4, d1, d2, d3, d4) =>
+    dist = array.new<float>(d1.rows(), 0.0)
+    for i = 0 to d1.rows() - 1
+        diff1 = x1.diff(d1.submatrix(i, i + 1)).row(0)
+        diff2 = x2.diff(d2.submatrix(i, i + 1)).row(0)
+        diff3 = x3.diff(d3.submatrix(i, i + 1)).row(0)
+        diff4 = x4.diff(d4.submatrix(i, i + 1)).row(0)
+        sum = 0.0
+        for j = 0 to aiForecastN - 1
+            sum += math.pow(diff1.get(j), 2) * 0.25 + math.pow(diff2.get(j), 2) * 0.25 + math.pow(diff3.get(j), 2) * 0.25 + math.pow(diff4.get(j), 2) * 0.25
+        dist.set(i, math.sqrt(sum))
+    dist
+
+f_aiForecastPredict(dist, yArr, nNeighbors, minSpacing, weightPower) =>
+    idx = dist.sort_indices()
+    selected = array.new<int>()
+    // Greedy de-correlation: do not let a cluster of overlapping windows
+    // masquerade as several independent neighbors.
+    if idx.size() > 0
+        for i = 0 to idx.size() - 1
+            candidate = idx.get(i)
+            eligible = true
+            if selected.size() > 0
+                for j = 0 to selected.size() - 1
+                    if math.abs(candidate - selected.get(j)) < minSpacing
+                        eligible := false
+            if eligible and selected.size() < nNeighbors
+                selected.push(candidate)
+    n = selected.size()
+    eps = 1e-6
+    weightSumLocal = 0.0
+    weightedRet = 0.0
+    weightedUp = 0.0
+    if n > 0
+        for i = 0 to n - 1
+            id = selected.get(i)
+            w = 1.0 / math.pow(math.max(dist.get(id), eps), weightPower)
+            weightSumLocal += w
+            weightedRet += yArr.get(id) * w
+            weightedUp += (yArr.get(id) > 0 ? 1.0 : 0.0) * w
+    avg = weightSumLocal > 0 ? weightedRet / weightSumLocal : 0.0
+    variance = 0.0
+    if n > 0 and weightSumLocal > 0
+        for i = 0 to n - 1
+            id = selected.get(i)
+            w = 1.0 / math.pow(math.max(dist.get(id), eps), weightPower)
+            variance += w * math.pow(yArr.get(id) - avg, 2)
+        variance /= weightSumLocal
+    dispersion = math.sqrt(variance)
+    directionVote = weightSumLocal > 0 ? math.max(weightedUp / weightSumLocal, 1.0 - weightedUp / weightSumLocal) : 0.5
+    nearestDistance = n > 0 ? dist.get(selected.get(0)) : na
+    distanceQuality = not na(nearestDistance) ? math.exp(-nearestDistance / math.sqrt(aiForecastN)) : 0.0
+    stability = math.exp(-dispersion * 8.0)
+    robustConfidence = f_clamp(0.5 * directionVote + 0.3 * distanceQuality + 0.2 * stability, 0.0, 1.0)
+    [avg, robustConfidence, n > 0 ? selected.get(0) : int(na), dispersion]
+
+if useaiForecast and barstate.isconfirmed and bar_index > aiForecastNTotal
+    rawYLabel = math.log(close) - math.log(close[aiForecastNY])
+    // Winsorize extreme events so one gap/crash cannot dominate the analog set.
+    yLabel = f_clamp(rawYLabel, math.log(1.0 - maxForecastPct / 100.0), math.log(1.0 + maxForecastPct / 100.0))
+    xBody = f_aiForecastUpdateDict(aiForecastD1, izaDictInput.bodyF)
+    xRange = f_aiForecastUpdateDict(aiForecastD2, izaDictInput.crangeF)
+    xWickLow = f_aiForecastUpdateDict(aiForecastD3, izaDictInput.wickLowF)
+    xWickHigh = f_aiForecastUpdateDict(aiForecastD4, izaDictInput.wickHighF)
+    f_aiForecastUpdateHist(aiForecastH, high)
+    f_aiForecastUpdateHist(aiForecastL, low)
+    f_aiForecastUpdateHist(aiForecastO, open)
+    f_aiForecastUpdateHist(aiForecastC, close)
+    if aiForecastY.size() >= aiForecastDictSize
+        aiForecastY.shift()
+    aiForecastY.push(yLabel)
+    dist = f_aiForecastDistance(xBody, xRange, xWickLow, xWickHigh, aiForecastD1, aiForecastD2, aiForecastD3, aiForecastD4)
+    [avgRet, confRatio, nearestIdx, dispersion] = f_aiForecastPredict(dist, aiForecastY, aiForecastNeighbors, aiForecastMinSpacing, aiForecastWeightPower)
+    aiForecastYhat := avgRet
+    aiForecastConf := confRatio
+    aiForecastNearest := nearestIdx
+    aiForecastDisp := dispersion
+
+aiForecastYhatFiltered = ta.ema(aiForecastYhat, aiForecastFilterLen)
+aiForecastForecastClose = not na(aiForecastYhatFiltered) ? close * math.exp(aiForecastYhatFiltered) : na
+aiForecastDailyDrift = not na(aiForecastForecastClose) ? (aiForecastForecastClose - close) / horizon : na
+
+weightSum = math.max(wTrend + wMomentum + wVolume + wMeanRev, 0.01)
+dailyDriftRaw = (wTrend * trendComponent + wMomentum * momentumComponent + wVolume * volumeComponent + wMeanRev * meanRevComponent) / weightSum
+maxDailyMove = close * (maxForecastPct / 100) / horizon
+dailyDriftEnsemble = f_clamp(dailyDriftRaw, -maxDailyMove, maxDailyMove)
+aiForecastDailyDriftClamped = not na(aiForecastDailyDrift) ? f_clamp(aiForecastDailyDrift, -maxDailyMove, maxDailyMove) : na
+// The user-set weight is a ceiling. Weak or dispersed matches automatically
+// receive less influence instead of forcing a low-quality analog into the blend.
+aiForecastActiveWeight = useaiForecast and not na(aiForecastDailyDriftClamped) ? aiForecastWeight * f_clamp(0.25 + 0.75 * nz(aiForecastConf, 0.0), 0.0, 1.0) : 0.0
+trendModelTarget = f_trendPathTarget(close, dailyDriftEnsemble, atr14, horizon)
+// Benchmark winner: adaptive terminal-target blend. Then solve the per-candle
+// drift so the final TR candle closes exactly at the displayed target.
+trendForecastClose20 = trendModelTarget * (1.0 - aiForecastActiveWeight) + nz(aiForecastForecastClose, trendModelTarget) * aiForecastActiveWeight
+dailyDrift = f_driftForPathTarget(close, trendForecastClose20, atr14, horizon)
+forecastPct = (trendForecastClose20 / close - 1) * 100
+
+trendAgree = math.sign(regSlope) == math.sign(ema20 - ema50) ? 1.0 : 0.0
+weeklyAgree = math.sign(dailyDrift) == math.sign(wRegime) or wRegime == 0 ? 1.0 : 0.0
+volumeAgree = rvol >= minRvol and math.sign(flowRaw) == math.sign(dailyDrift) ? 1.0 : 0.0
+structureQuality = close > sma200 and ema20 > ema50 ? 1.0 : close < sma200 and ema20 < ema50 ? 1.0 : 0.4
+aiForecastAgree = useaiForecast and not na(aiForecastDailyDriftClamped) ? (math.sign(aiForecastDailyDriftClamped) == math.sign(dailyDriftEnsemble) ? 1.0 : 0.0) : 0.5
+aiForecastScore = useaiForecast and not na(aiForecastDailyDriftClamped) ? aiForecastAgree * nz(aiForecastConf, 0.5) : 0.5
+confidence = f_clamp(38 + trendAgree * 13 + weeklyAgree * 10 + volumeAgree * 10 + structureQuality * 8 + aiForecastScore * 11 - f_clamp(atr14 / close * 100 - 5, 0, 10), 35, 90)
+direction = confidence < minConfidence ? "NEUTRAL" : forecastPct > 1 ? "UP" : forecastPct < -1 ? "DOWN" : "SIDEWAYS"
+invalidation = dailyDrift >= 0 ? close - atrInvalidation * atr14 : close + atrInvalidation * atr14
+aiForecastPct = not na(aiForecastForecastClose) ? (aiForecastForecastClose / close - 1.0) * 100.0 : na
+aiForecastDirection = na(aiForecastPct) ? "WAIT" : math.abs(aiForecastPct) <= 1.0 ? "NEUTRAL" : aiForecastPct > 0 ? "UP" : "DOWN"
+aiForecastConfidencePct = nz(aiForecastConf) * 100.0
+aiForecastInvalidation = nz(aiForecastDailyDriftClamped) >= 0 ? close - atrInvalidation * atr14 : close + atrInvalidation * atr14
+aiForecastStatus = not useaiForecast ? "OFF" : na(aiForecastForecastClose) ? "WARMING UP" : aiForecastConfidencePct >= minConfidence ? "VALID" : "LOW CONF"
+
+// ---------- Locked rolling validation
+// Every closed real candle is compared only with the one-step forecast that
+// was created at the previous close. This avoids choosing among overlapping
+// forecast vintages after the result is known.
+nextCycle = math.sin(1.618) * atr14 * 0.10
+nextUncertainty = atr14 * (0.45 + 0.055) * (1.15 - confidence / 200)
+trendNextPredOpen = close
+trendNextPredClose = math.max(syminfo.mintick, close + dailyDrift + nextCycle)
+trendNextPredHigh = math.max(trendNextPredOpen, trendNextPredClose) + nextUncertainty * 0.45
+trendNextPredLow = math.max(syminfo.mintick, math.min(trendNextPredOpen, trendNextPredClose) - nextUncertainty * 0.45)
+
+lockedOpen = trendNextPredOpen[1]
+lockedClose = trendNextPredClose[1]
+lockedHigh = trendNextPredHigh[1]
+lockedLow = trendNextPredLow[1]
+lockedATR = atr14[1]
+predMove = lockedClose - lockedOpen
+realMove = close - close[1]
+flatThreshold = nz(lockedATR) * 0.05
+directionMatch = math.abs(predMove) <= flatThreshold ? math.abs(realMove) <= flatThreshold : math.sign(predMove) == math.sign(realMove)
+closeError = math.abs(close - lockedClose)
+toleranceMatch = closeError <= nz(lockedATR) * errorToleranceATR
+validationReady = barstate.isconfirmed and not na(lockedClose) and not na(lockedATR)
+validationTrue = validationReady and directionMatch and (evaluationMode == "Direction only" or toleranceMatch)
+validationFalse = validationReady and not validationTrue
+validationCount = math.sum(validationReady ? 1.0 : 0.0, evaluationLookback)
+validationWins = math.sum(validationTrue ? 1.0 : 0.0, evaluationLookback)
+accuracy1D = validationCount > 0 ? validationWins / validationCount * 100 : na
+
+// Independent horizon validation: compare today's close with the 20-bar
+// target locked exactly `horizon` bars ago. This is displayed as statistics,
+// not used to repaint historical candles or alter the live projection.
+dueForecast = trendForecastClose20[horizon]
+dueBase = close[horizon]
+dueATR = atr14[horizon]
+validation20Ready = barstate.isconfirmed and not na(dueForecast) and not na(dueBase)
+direction20Match = math.sign(dueForecast - dueBase) == math.sign(close - dueBase)
+tolerance20Match = math.abs(close - dueForecast) <= nz(dueATR) * math.sqrt(horizon) * errorToleranceATR
+validation20True = validation20Ready and direction20Match and (evaluationMode == "Direction only" or tolerance20Match)
+validation20Count = math.sum(validation20Ready ? 1.0 : 0.0, evaluationLookback)
+validation20Wins = math.sum(validation20True ? 1.0 : 0.0, evaluationLookback)
+direction20Wins = math.sum(validation20Ready and direction20Match ? 1.0 : 0.0, evaluationLookback)
+target20Wins = math.sum(validation20Ready and tolerance20Match ? 1.0 : 0.0, evaluationLookback)
+directionAccuracy20D = validation20Count > 0 ? direction20Wins / validation20Count * 100 : na
+accuracy20D = validation20Count > 0 ? target20Wins / validation20Count * 100 : na
+
+dueAiForecast = aiForecastForecastClose[horizon]
+aiValidation20Ready = barstate.isconfirmed and not na(dueAiForecast) and not na(dueBase)
+aiDirection20Match = math.sign(dueAiForecast - dueBase) == math.sign(close - dueBase)
+aiTolerance20Match = math.abs(close - dueAiForecast) <= nz(dueATR) * math.sqrt(horizon) * errorToleranceATR
+aiValidation20True = aiValidation20Ready and aiDirection20Match and (evaluationMode == "Direction only" or aiTolerance20Match)
+aiValidation20Count = math.sum(aiValidation20Ready ? 1.0 : 0.0, evaluationLookback)
+aiValidation20Wins = math.sum(aiValidation20True ? 1.0 : 0.0, evaluationLookback)
+aiDirection20Wins = math.sum(aiValidation20Ready and aiDirection20Match ? 1.0 : 0.0, evaluationLookback)
+aiTarget20Wins = math.sum(aiValidation20Ready and aiTolerance20Match ? 1.0 : 0.0, evaluationLookback)
+aiDirectionAccuracy20D = aiValidation20Count > 0 ? aiDirection20Wins / aiValidation20Count * 100 : na
+aiAccuracy20D = aiValidation20Count > 0 ? aiTarget20Wins / aiValidation20Count * 100 : na
+
+// ---------- Short-term (10D) levels — Support/Resistance/TR1/TR2/Stop/Entry, referencing
+// the AI/TR Forecast's own range and timeline per explicit request. TR2 reuses
+// trendForecastClose20 directly (no recompute); TR1 reuses the same
+// f_trendPathTarget/dailyDrift the main forecast already uses, evaluated at a shorter
+// horizon so it stays tied to the same forecast path instead of being a separate,
+// disconnected calculation.
+shortSupport = ta.lowest(low, srLookback)
+shortResistance = ta.highest(high, srLookback)
+shortStopLoss = shortSupport - stopBufferATR * atr14
+tr1Horizon = math.min(srLookback, horizon)
+tr1Target = f_trendPathTarget(close, dailyDrift, atr14, tr1Horizon)
+tr2Target = trendForecastClose20
+entryArea = candidateEntry
+
+// Accuracy/consistency check for the new short-term levels, using the same locked-
+// rolling methodology as the TR/AI forecast validation above.
+dueTR1 = tr1Target[srLookback]
+tr1ValidReady = barstate.isconfirmed and not na(dueTR1) and not na(close[srLookback])
+tr1DirMatch = math.sign(dueTR1 - close[srLookback]) == math.sign(close - close[srLookback])
+tr1TolMatch = math.abs(close - dueTR1) <= nz(atr14[srLookback]) * math.sqrt(srLookback) * errorToleranceATR
+tr1ValidTrue = tr1ValidReady and tr1DirMatch and (evaluationMode == "Direction only" or tr1TolMatch)
+tr1ValidCount = math.sum(tr1ValidReady ? 1.0 : 0.0, evaluationLookback)
+tr1ValidWins = math.sum(tr1ValidTrue ? 1.0 : 0.0, evaluationLookback)
+tr1Accuracy = tr1ValidCount > 0 ? tr1ValidWins / tr1ValidCount * 100 : na
+
+// Did the 10-bar S/R band set `srLookback` bars ago still hold on this bar?
+srSupportLocked = shortSupport[srLookback]
+srResistanceLocked = shortResistance[srLookback]
+srCheckReady = barstate.isconfirmed and not na(srSupportLocked) and not na(srResistanceLocked)
+srHeld = srCheckReady and low >= srSupportLocked - atr14 * 0.25 and high <= srResistanceLocked + atr14 * 0.25
+srCheckCount = math.sum(srCheckReady ? 1.0 : 0.0, evaluationLookback)
+srHeldCount = math.sum(srHeld ? 1.0 : 0.0, evaluationLookback)
+srConsistency = srCheckCount > 0 ? srHeldCount / srCheckCount * 100 : na
+
+// Historical locked candles remain on chart automatically as series plots.
+lockedMoveATR = nz(lockedATR) > 0 ? (lockedClose - lockedOpen) / lockedATR : 0.0
+histColor = color.new(color.silver, 70)
+plotcandle(showHistory ? lockedOpen : na, showHistory ? lockedHigh : na, showHistory ? lockedLow : na, showHistory ? lockedClose : na, title="Locked Trend Forecast Candle", color=histColor, wickcolor=histColor, bordercolor=histColor)
+// Validation remains active for accuracy statistics; no per-bar result
+// notation is drawn on the price chart.
+
+var line[] fcDrawings = array.new<line>()
+var label[] fcNotes = array.new<label>()
+var box[] aiForecastBoxes = array.new<box>()
+f_fcClear() =>
+    while array.size(fcDrawings) > 0
+        line.delete(array.pop(fcDrawings))
+    while array.size(fcNotes) > 0
+        label.delete(array.pop(fcNotes))
+    while array.size(aiForecastBoxes) > 0
+        box.delete(array.pop(aiForecastBoxes))
+
+// Short-term level line + right-end tag: width 1, transparent (lineTransparency /
+// notationTransparency), tag text small with the price BOLD via f_bold().
+f_levelLine(endX, priceVal, nameTxt, baseCol, isLight) =>
+    array.push(fcDrawings, line.new(bar_index, priceVal, endX, priceVal, xloc=xloc.bar_index, color=color.new(baseCol, lineTransparency), style=line.style_solid, width=1))
+    tagTxt = nameTxt + " " + f_bold(str.tostring(priceVal, format.mintick))
+    array.push(fcNotes, label.new(endX, priceVal, tagTxt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(baseCol, notationTransparency), textcolor=isLight ? color.black : color.white, size=size.small))
+
+if barstate.islast
+    f_fcClear()
+    // Satu forecast candle menempati satu bar, sama seperti candle normal.
+    int visualStep = 1
+    int commonForecastEnd = bar_index + horizon * visualStep
+    int trendTargetEnd = commonForecastEnd + 15
+    int aiTargetEnd = commonForecastEnd + 7
+    float aiCandleMaxHigh = na
+    float prevC = close
+    float upperPrev = close
+    float lowerPrev = close
+    for i = 1 to horizon
+        decay = 1.0 - 0.35 * (i - 1) / math.max(horizon - 1, 1)
+        cycle = math.sin(i * 1.618) * atr14 * 0.10
+        predO = prevC
+        predC = math.max(syminfo.mintick, predO + dailyDrift * decay + cycle)
+        uncertainty = atr14 * (0.45 + 0.055 * i) * (1.15 - confidence / 200)
+        predH = math.max(predO, predC) + uncertainty * 0.45
+        predL = math.max(syminfo.mintick, math.min(predO, predC) - uncertainty * 0.45)
+        stepMoveATR = atr14 > 0 ? (predC - predO) / atr14 : 0.0
+        candleColor = stepMoveATR > 0.05 ? color.new(color.lime, 70) : stepMoveATR < -0.05 ? color.new(color.red, 70) : color.new(color.orange, 70)
+        candleX = bar_index + i * visualStep
+        priorX = i == 1 ? bar_index : bar_index + (i - 1) * visualStep
+        if showCandles
+            array.push(fcDrawings, line.new(candleX, predL, candleX, predH, xloc=xloc.bar_index, color=candleColor, style=line.style_dashed, width=1))
+            array.push(fcDrawings, line.new(candleX, predO, candleX, predC, xloc=xloc.bar_index, color=candleColor, style=line.style_dashed, width=4))
+        array.push(fcDrawings, line.new(priorX, prevC, candleX, predC, xloc=xloc.bar_index, color=color.new(color.yellow, 70), style=line.style_dashed, width=2))
+        if showBand
+            upperNow = predC + uncertainty
+            lowerNow = predC - uncertainty
+            array.push(fcDrawings, line.new(priorX, upperPrev, candleX, upperNow, xloc=xloc.bar_index, color=color.new(color.gray, 55), style=line.style_dotted))
+            array.push(fcDrawings, line.new(priorX, lowerPrev, candleX, lowerNow, xloc=xloc.bar_index, color=color.new(color.gray, 55), style=line.style_dotted))
+            upperPrev := upperNow
+            lowerPrev := lowerNow
+        prevC := predC
+    arrowColor = direction == "UP" ? color.new(color.lime, 55) : direction == "DOWN" ? color.new(color.red, 55) : color.new(color.orange, 55)
+    trendStatus = confidence >= minConfidence ? "VALID" : "LOW CONF"
+    msg = "𝗧𝗥 𝗙𝗢𝗥𝗘𝗖𝗔𝗦𝗧\n" + direction + " " + str.tostring(horizon) + "D\nTarget: " + str.tostring(trendForecastClose20, format.mintick) + "\n" + str.tostring(forecastPct, "#.##") + "% | Conf " + str.tostring(confidence, "#") + "%\nInvalid: " + str.tostring(invalidation, format.mintick) + "\nStatus: " + trendStatus + "\nTarget Acc: " + str.tostring(accuracy20D, "#.##") + "%"
+    // Black target line; TR extends 15 bars farther to keep panels separate.
+    array.push(fcDrawings, line.new(bar_index, trendForecastClose20, trendTargetEnd, trendForecastClose20, xloc=xloc.bar_index, color=color.new(color.black, 70), style=line.style_dashed, width=1))
+    // TR directional arrow: dashed trend-colored shaft plus arrow head.
+    array.push(fcDrawings, line.new(bar_index, close, commonForecastEnd, trendForecastClose20, xloc=xloc.bar_index, color=color.new(arrowColor, 18), style=line.style_dashed, width=2))
+    array.push(fcNotes, label.new(commonForecastEnd, trendForecastClose20, "➤", xloc=xloc.bar_index, style=label.style_none, color=na, textcolor=arrowColor, size=size.tiny))
+    array.push(fcNotes, label.new(trendTargetEnd, trendForecastClose20, msg, xloc=xloc.bar_index, style=label.style_label_upper_left, color=arrowColor, textcolor=chart.fg_color, size=size.tiny))
+
+    // AI Forecast visual — replays the nearest historical analog's
+    // own N-bar shape, rescaled onto the current price, as a secondary cue.
+    if showPatternShape and useaiForecast and not na(aiForecastNearest) and aiForecastH.rows() > 0 and aiForecastO.rows() > 0 and aiForecastC.rows() > 0
+        patRow = int(math.max(0, math.min(aiForecastNearest, aiForecastH.rows() - 1)))
+        patternHigh = aiForecastH.row(patRow)
+        patternLow = aiForecastL.row(patRow)
+        patternOpen = aiForecastO.row(patRow)
+        patternClose = aiForecastC.row(patRow)
+        patLen = patternHigh.size()
+        if patLen > 1
+            shapeHighs = array.new<float>(0)
+            shapeLows = array.new<float>(0)
+            shapeOpens = array.new<float>(0)
+            shapeCloses = array.new<float>(0)
+            patternAnchor = math.max(patternOpen.get(0), syminfo.mintick)
+            rawFinalClose = math.max((patternClose.get(patLen - 1) / patternAnchor) * close, syminfo.mintick)
+            targetScale = aiForecastForecastClose / rawFinalClose
+            for i = 0 to patLen - 1
+                progress = (i + 1.0) / patLen
+                progressiveScale = 1.0 + progress * (targetScale - 1.0)
+                array.push(shapeHighs, (patternHigh.get(i) / patternAnchor) * close * progressiveScale)
+                array.push(shapeLows, (patternLow.get(i) / patternAnchor) * close * progressiveScale)
+                array.push(shapeOpens, (patternOpen.get(i) / patternAnchor) * close * progressiveScale)
+                array.push(shapeCloses, (patternClose.get(i) / patternAnchor) * close * progressiveScale)
+            shapeSpan = array.size(shapeHighs)
+            echoColor = aiForecastDirection == "UP" ? color.new(color.lime, 70) : aiForecastDirection == "DOWN" ? color.new(color.red, 70) : color.new(color.orange, 70)
+            // Resample the matched pattern onto the same horizon/timeline used
+            // by TR Forecast. Each AI candle is a colored dashed range line.
+            for k = 0 to horizon - 1
+                sourceIndex = int(math.round(k * (shapeSpan - 1) / math.max(horizon - 1, 1)))
+                candleHigh = array.get(shapeHighs, sourceIndex)
+                candleLow = array.get(shapeLows, sourceIndex)
+                candleOpen = array.get(shapeOpens, sourceIndex)
+                candleClose = array.get(shapeCloses, sourceIndex)
+                candleMove = atr14 > 0 ? (candleClose - candleOpen) / atr14 : 0.0
+                aiCandleColor = candleMove > 0.05 ? color.new(color.lime, 70) : candleMove < -0.05 ? color.new(color.red, 70) : color.new(color.orange, 70)
+                candleX = bar_index + (k + 1) * visualStep
+                aiCandleMaxHigh := na(aiCandleMaxHigh) ? candleHigh : math.max(aiCandleMaxHigh, candleHigh)
+                array.push(fcDrawings, line.new(candleX, candleLow, candleX, candleHigh, xloc=xloc.bar_index, color=aiCandleColor, style=line.style_solid, width=1))
+                array.push(fcDrawings, line.new(candleX, candleOpen, candleX, candleClose, xloc=xloc.bar_index, color=aiCandleColor, style=line.style_solid, width=4))
+    if useaiForecast and not na(aiForecastForecastClose)
+        aiPanelColor = aiForecastDirection == "UP" ? color.new(color.lime, 55) : aiForecastDirection == "DOWN" ? color.new(color.red, 55) : color.new(color.orange, 55)
+        aiPanelMsg = "𝗔𝗜 𝗙𝗢𝗥𝗘𝗖𝗔𝗦𝗧\n" + aiForecastDirection + " " + str.tostring(horizon) + "D\nTarget: " + str.tostring(aiForecastForecastClose, format.mintick) + "\n" + str.tostring(aiForecastPct, "#.##") + "% | Conf " + str.tostring(aiForecastConfidencePct, "#") + "%\nInvalid: " + str.tostring(aiForecastInvalidation, format.mintick) + "\nStatus: " + aiForecastStatus + "\nTarget Acc: " + str.tostring(aiAccuracy20D, "#.##") + "%"
+        array.push(fcDrawings, line.new(bar_index, aiForecastForecastClose, aiTargetEnd, aiForecastForecastClose, xloc=xloc.bar_index, color=color.new(color.black, 70), style=line.style_solid, width=1))
+        // AI directional arrow: solid arrow line, width 2, trend color.
+        array.push(fcDrawings, line.new(bar_index, close, commonForecastEnd, aiForecastForecastClose, xloc=xloc.bar_index, color=aiPanelColor, style=line.style_arrow_right, width=2))
+        array.push(fcNotes, label.new(commonForecastEnd, aiForecastForecastClose, aiPanelMsg, xloc=xloc.bar_index, style=label.style_label_upper_left, color=aiPanelColor, textcolor=chart.fg_color, size=size.tiny))
+
+    // Short-term level lines (Support/Resistance/TR1/TR2/Stop/Entry), width 1, ending
+    // 2 bars past the AI Forecast candlesticks (commonForecastEnd), transparent, with
+    // a small bold-price tag at the right end.
+    if showShortTermLevels
+        srLineEnd = commonForecastEnd + 2
+        f_levelLine(srLineEnd, shortSupport, "SUPPORT", color.orange, false)
+        f_levelLine(srLineEnd, shortResistance, "RESISTANCE", color.lime, true)
+        f_levelLine(srLineEnd, tr1Target, "TR1", color.green, false)
+        f_levelLine(srLineEnd, tr2Target, "TR2", color.blue, false)
+        f_levelLine(srLineEnd, shortStopLoss, "STOP LOSS", color.red, false)
+        f_levelLine(srLineEnd, entryArea, "ENTRY-AREA", color.aqua, true)
+
+    // Consolidated info panel — replaces the old 17-row table entirely. Positioned
+    // 5 ATR above the highest AI Forecast candlestick (falls back to the highest
+    // forecast price if AI Forecast candles are not drawn), centered over the
+    // forecast horizon. Only fields NOT already visible elsewhere on the chart
+    // (level lines, candle notation tags, or the TR/AI Forecast panels' own text)
+    // are included — see V2.5 header note for the full redundancy list.
+    if showDashboard
+        panelAnchorHigh = not na(aiCandleMaxHigh) ? aiCandleMaxHigh : math.max(nz(aiForecastForecastClose, close), math.max(nz(trendForecastClose20, close), close))
+        panelY = panelAnchorHigh + 5 * atr14
+        panelX = bar_index + int(math.round(horizon / 2.0))
+        totalPatHits = array.get(hits, 0) + array.get(hits, 1) + array.get(hits, 2) + array.get(hits, 3)
+        totalPatRes  = array.get(res, 0) + array.get(res, 1) + array.get(res, 2) + array.get(res, 3)
+        patAccTxt = totalPatRes >= minStat ? str.tostring(math.round(100.0 * totalPatHits / totalPatRes)) + "% (" + str.tostring(totalPatHits) + "/" + str.tostring(totalPatRes) + ")" : "-"
+        patLine = showStats ? "\n" + f_bold("PATTERN ACC") + " :    " + patAccTxt : ""
+        panelBg = str.contains(decision, "BUY") or decision == "HOLD" ? color.new(color.green, 15) : decision == "CL" or str.contains(decision, "X") or str.contains(decision, "RED") ? color.new(color.red, 10) : color.new(color.orange, 20)
+        panelMsg = f_bold("SYMBOL") + " :    " + syminfo.ticker + " . " + (hasPosition ? "OWNED" : "FLAT") +
+                   "\n" + f_bold("DECISION") + " :    " + decision +
+                   "\n" + f_bold("TREND") + " :    " + trendState + " (W:" + wState + ")" +
+                   "\n" + f_bold("STRUCTURE") + " :    " + structureText +
+                   "\n" + f_bold("SETUP") + " :    " + setupCode +
+                   "\n" + f_bold("CANDLE") + " :    " + candleName +
+                   "\n" + f_bold("RVOL/FLOW") + " :    " + str.tostring(rvol, "#.##") + "x / " + (flowRaw > 0 ? "BUY" : flowRaw < 0 ? "SELL" : "NEUTRAL") +
+                   "\n" + f_bold("SCORE/LOT") + " :    " + str.tostring(buyScore) + "/10 | " + str.tostring(lots) +
+                   "\n" + f_bold("ATR%") + " :    " + str.tostring(atr14 / close * 100, "#.##") + "%" +
+                   "\n" + f_bold("LEVEL ACC") + " :    TR1 " + str.tostring(tr1Accuracy, "#.##") + "% . SR " + str.tostring(srConsistency, "#.##") + "%" +
+                   patLine
+        array.push(fcNotes, label.new(panelX, panelY, panelMsg, xloc=xloc.bar_index, style=label.style_label_center, color=panelBg, textcolor=color.white, size=size.small))
+
+// ---------- Elite 20D: plots — all lines made transparent per input (default 85%)
+plot(showMA ? ema10 : na, "EMA10", color=color.new(color.aqua, lineTransparency), linewidth=1)
+plot(showMA ? ema20 : na, "EMA20", color=color.new(color.blue, lineTransparency), linewidth=2)
+plot(showMA ? ema50 : na, "EMA50", color=color.new(color.orange, lineTransparency), linewidth=2)
+plot(showMA ? sma200 : na, "SMA200", color=color.new(color.purple, lineTransparency), linewidth=2)
+plot(showLevels ? s1 : na, "Support 1", color=color.new(color.green, lineTransparency), linewidth=2, style=plot.style_stepline)
+plot(showLevels ? s2 : na, "Support 2", color=color.new(color.green, lineTransparency), linewidth=1, style=plot.style_stepline)
+plot(showLevels ? r1 : na, "Resistance 1", color=color.new(color.red, lineTransparency), linewidth=2, style=plot.style_stepline)
+plot(showLevels ? r2 : na, "Resistance 2", color=color.new(color.red, lineTransparency), linewidth=1, style=plot.style_stepline)
+pZL = plot(showBuyZone ? buyZoneLow : na, "Buy Zone Low", color=color.new(color.teal, 100))
+pZH = plot(showBuyZone ? buyZoneHigh : na, "Buy Zone High", color=color.new(color.teal, 100))
+fill(pZL, pZH, color=color.new(color.teal, 100), title="Buy Zone")
+plot(hasPosition ? initialStop : buySignal ? autoStop : na, "Cut Loss", color=color.new(color.red, lineTransparency), linewidth=2, style=plot.style_stepline)
+plot(hasPosition ? ownedTP1 : buySignal ? candidateTP1 : na, "Target 1", color=color.new(color.lime, lineTransparency), style=plot.style_stepline)
+plot(hasPosition ? ownedTP2 : buySignal ? candidateTP2 : na, "Target 2", color=color.new(color.lime, lineTransparency), style=plot.style_stepline)
+plot(hasPosition ? trailStop : na, "Trailing Stop", color=color.new(color.orange, lineTransparency), linewidth=2, style=plot.style_stepline)
+
+// Forecast module analysis-only plots (Data Window / cross-tool reference).
+// Forecast's own EMA20/EMA50 plots were dropped here — Elite's EMA20/EMA50
+// plots above already cover the same series.
+plot(invalidation, "Trend Forecast Invalidation (analysis only)", color=color.new(color.red, 100), style=plot.style_stepline, display=display.none)
+plot(aiForecastForecastClose, "AI Forecast Target (analysis only)", display=display.none)
+plot(aiForecastForecastClose + aiForecastBandAtr * atr14, "AI Forecast Upper Band (analysis only)", display=display.none)
+plot(aiForecastForecastClose - aiForecastBandAtr * atr14, "AI Forecast Lower Band (analysis only)", display=display.none)
+
+// ---------- Candle notations consolidated into 2 labels/bar (was 17 separate
+// plotshape() calls — see V2.2 header note). One priority order picks at most
+// one bullish (below-bar) and one bearish (above-bar) tag per bar.
+isStd = displayMode == "Standard" or displayMode == "Detail"
+isDetail = displayMode == "Detail"
+
+bullTagText = bosBull ? "BOS+" : bearTrap ? "BRTRAP" : accClass == 3 ? "AK3" : (isStd and absorptionBull) ? "ABS+" : (isStd and accClass == 2) ? "AK2" : (isDetail and accClass == 1) ? "AK1" : ""
+bullTagCol  = bosBull ? color.blue : bearTrap ? color.orange : absorptionBull and bullTagText == "ABS+" ? color.teal : color.green
+bullTagDark = bullTagText == "AK1"
+
+bearTagText = bosBear ? "BOS-" : (isStd and exhaustion) ? "EXH" : bullTrap ? "BTRAP" : upthrust ? "UT" : gapTrap ? "GTRAP" : distClass == 3 ? "DS3" : (isStd and absorptionBear) ? "ABS-" : (isStd and distClass == 2) ? "DS2" : (isDetail and churn) ? "CHURN" : (isDetail and distClass == 1) ? "DS1" : ""
+bearTagCol  = bosBear ? color.red : exhaustion ? color.purple : (bullTrap or upthrust or gapTrap) ? color.orange : churn ? color.purple : absorptionBear and bearTagText == "ABS-" ? color.maroon : color.red
+bearTagDark = bearTagText == "DS1"
+
+var label[] noteLabels = array.new<label>()
+f_capNotes() =>
+    if array.size(noteLabels) > 100
+        label.delete(array.shift(noteLabels))
+
+if barstate.isconfirmed and bullTagText != ""
+    nlB = label.new(bar_index, low - atr14 * 0.3, bullTagText, style = label.style_label_up, color = color.new(bullTagCol, notationTransparency), textcolor = bullTagDark ? color.black : color.white, size = size.tiny)
+    array.push(noteLabels, nlB)
+    f_capNotes()
+if barstate.isconfirmed and bearTagText != ""
+    nlS = label.new(bar_index, high + atr14 * 0.3, bearTagText, style = label.style_label_down, color = color.new(bearTagCol, notationTransparency), textcolor = bearTagDark ? color.black : color.white, size = size.tiny)
+    array.push(noteLabels, nlS)
+    f_capNotes()
+
+// Decision label only when state changes; bounded queue avoids unlimited objects.
+var label[] decisionLabels = array.new<label>()
+decisionChanged = barstate.isconfirmed and decision != decision[1]
+if showDecisionLabels and decisionChanged
+    bool bullishDecision = str.contains(decision, "BUY") or decision == "PRE-BUY" or decision == "HOLD"
+    bool bearishDecision = decision == "CL" or str.contains(decision, "X") or str.contains(decision, "SELL") or str.contains(decision, "RED")
+    float y = bullishDecision ? low : high
+    st = bullishDecision ? label.style_label_up : label.style_label_down
+    color bg = bullishDecision ? color.new(color.green, notationTransparency) : bearishDecision ? color.new(color.red, notationTransparency) : color.new(color.gray, notationTransparency)
+    label lb = label.new(bar_index, y, decision, style=st, color=bg, textcolor=color.white, size=size.tiny)
+    array.push(decisionLabels, lb)
+    if array.size(decisionLabels) > maxDecisionLabels
+        label.delete(array.shift(decisionLabels))
+
+// ---------- Alerts: Elite 20D
+alertcondition(buySignal, "BUY Setup Confirmed", "{{ticker}} BUY setup confirmed on {{interval}}. Check entry, stop, target and dashboard.")
+alertcondition(buySignalReversal, "BUY Reversal (RV2)", "{{ticker}} reversal BUY via support + candlestick + volume confluence, ahead of the weekly trend gate.")
+alertcondition(preBuy, "PRE-BUY", "{{ticker}} PRE-BUY: accumulation and structure detected; wait for trigger.")
+alertcondition(bullTrap or upthrust or gapTrap, "Trading Trap", "{{ticker}} trading trap detected: avoid new buy or manage owned position.")
+alertcondition(distClass >= 2, "Distribution", "{{ticker}} medium/large distribution proxy detected.")
+alertcondition(hasPosition and tp1Hit, "Target 1", "{{ticker}} Target 1 reached: consider partial take profit.")
+alertcondition(hasPosition and tp2Hit, "Target 2", "{{ticker}} Target 2 reached: manage remaining position.")
+alertcondition(hasPosition and (hardStopHit or structureExit or falseBreakExit), "SELL / Cut Loss", "{{ticker}} SELL/CUT-LOSS condition detected. Review final decision.")
+alertcondition(hasPosition and timeExit, "20-Day Time Exit", "{{ticker}} 20-day time exit condition detected.")
+
+// ---------- Alerts: Chart Patterns
+alertcondition(bearConf, "[Pattern] Bearish pattern confirmed", "A bearish reversal pattern broke its neckline")
+alertcondition(bullConf, "[Pattern] Bullish pattern confirmed", "A bullish reversal pattern broke its neckline")
+alertcondition(tgtHit, "[Pattern] Target reached", "A confirmed pattern reached its measured target")
+alertcondition(patFail, "[Pattern] Pattern invalidated", "A confirmed pattern was invalidated before reaching target")
+
+// ---------- Alerts: Forecast
+alertcondition(barstate.isconfirmed and direction == "UP" and confidence >= minConfidence, "20D Trend Forecast UP", "{{ticker}} forecast 20D UP with valid confidence. Review risk and invalidation.")
+alertcondition(barstate.isconfirmed and direction == "DOWN" and confidence >= minConfidence, "20D Trend Forecast DOWN", "{{ticker}} forecast 20D DOWN. Review owned position and invalidation.")
+alertcondition(validationTrue, "Forecast Validation Passed", "{{ticker}} locked rolling forecast validation passed.")
+alertcondition(validationFalse, "Forecast Validation Failed", "{{ticker}} locked rolling forecast validation failed; recalibrate or reduce reliance.")

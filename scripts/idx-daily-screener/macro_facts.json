@@ -1,0 +1,52 @@
+{
+  "policy": [
+    {
+      "label": "Suku Bunga BI",
+      "value": "4,75%",
+      "trend": "dovish",
+      "arrow": "down",
+      "tag": "Berpotensi turun",
+      "facts": ["Ditahan sejak Sep 2025", "Proyeksi turun ~50 bps di 2026", "Inflasi terjaga 2,5%±1%"]
+    },
+    {
+      "label": "Suku Bunga The Fed",
+      "value": "3,50–3,75%",
+      "trend": "hawkish",
+      "arrow": "up",
+      "tag": "Risiko naik",
+      "facts": ["FOMC berikut 16 Sep 2026", "Inflasi inti 2,6% (di atas target)", "Sempat priced-in 67% peluang naik 25bps"]
+    }
+  ],
+  "domestic": {
+    "label": "Domestik Indonesia",
+    "items": [
+      {"name": "Inflasi Agustus", "value": "3,19% yoy", "arrow": "flat", "note": "0,21% mtm — terkendali dalam target BI"},
+      {"name": "Neraca Dagang", "value": "Membaik", "arrow": "up", "note": "Data Jun 2026; rilis Agu–Sep 2026 belum keluar"}
+    ]
+  },
+  "geopolitics": {
+    "label": "Geopolitik & Risiko Global",
+    "points": [
+      {"text": "Ketegangan dagang & teknologi AS-China berlanjut", "arrow": "warn"},
+      {"text": "Konflik Timur Tengah tekan pasar energi — 20% LNG global lewat Selat Hormuz", "arrow": "warn"},
+      {"text": ">60% PDB global kini terdampak gesekan geopolitik (WEF 2026)", "arrow": "warn"}
+    ]
+  },
+  "sentiment": {
+    "label": "Sentimen Pasar & Aliran Dana Asing",
+    "stats": [
+      {"name": "IHSG 1 Sep", "value": "+1,14%", "arrow": "up"},
+      {"name": "IHSG 2 Sep", "value": "-0,06%", "arrow": "down"},
+      {"name": "Rata² Sep (10 th)", "value": "-0,88%", "arrow": "down", "note": "7/10 tahun melemah"},
+      {"name": "Asing Agustus", "value": "+Rp11,09 T", "arrow": "up", "note": "all-market"},
+      {"name": "Asing 1 Sep", "value": "+Rp2,03 T", "arrow": "up", "note": "BBRI top net buy"},
+      {"name": "MSCI Mei 2026", "value": "-19 saham", "arrow": "down", "note": "outflow pasif ~US$1,3-2 M"},
+      {"name": "FTSE Sep 2026", "value": "Ditunda → Des", "arrow": "flat", "note": "status Secondary EM tetap"}
+    ],
+    "resume": "Mode wait-and-see: net buy asing di saham besar (BBRI) tertahan outflow pasif MSCI & penundaan upgrade FTSE, plus musim September historis lemah."
+  },
+  "sources": [
+    "Bank Indonesia", "BPS", "Federal Reserve/FOMC", "CNBC Indonesia", "IDN Financials", "MSCI & OJK", "FTSE Russell", "WEF Global Risks Report 2026"
+  ],
+  "as_of": "3 September 2026"
+}

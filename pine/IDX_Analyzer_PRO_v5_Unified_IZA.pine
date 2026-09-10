@@ -1,0 +1,731 @@
+//@version=6
+// ============================================================================
+// IDX ANALYZER PRO [IZA] v5 — Unified
+// ============================================================================
+// Merges and rebuilds two prior scripts into one decision-support indicator
+// for swing trading on IDX (and any symbol you attach it to):
+//   • "IDX Analyzer PRO [IZA+FEELS]"      — ATR-adaptive chart-pattern engine,
+//                                            shared pivot store.
+//   • "IDX Analyzer PRO v3.2 Elite [IZA]" — independent Bull/Bear scoring,
+//                                            ADX/MTF/market-regime context,
+//                                            structural entry/stop/target plan.
+//
+// WHAT CHANGED IN THIS UNIFIED VERSION
+//   1. ONE shared pivot/zigzag store now feeds swing structure, clustered
+//      S/R, AND the pattern engine — previously each half of the two source
+//      scripts tracked pivots independently (duplicated, could disagree).
+//   2. The pattern engine (Double Top/Bottom, Head & Shoulders / Inverse
+//      H&S) uses ATR-adaptive tolerance, a true alternating-pivot neckline
+//      with slope, an optional prior-trend gate, and a minimum-depth filter
+//      — evaluated fresh every bar (no persistent object list, no hit-rate
+//      table) so the chart only ever shows the CURRENT live pattern.
+//   3. Hardcoded ticker/watchlist gating is fully removed. The engine always
+//      evaluates whatever symbol is on the chart (syminfo.tickerid) — no
+//      code edits needed when your watchlist changes. (A single indicator
+//      instance still only ever draws on the chart it is attached to; use
+//      TradingView's own Watchlist Alert with this indicator's alerts for
+//      multi-symbol monitoring.)
+//   4. The 19-row dashboard table and the pattern hit-rate table are both
+//      removed. Every figure that used to live in a table (trend, phase,
+//      support, resistance, entry zone, stop, TP1, TP2, R:R, grade) is now
+//      printed directly on the chart as a line + text label, or folded into
+//      one compact status label — nothing is duplicated between a table and
+//      the chart anymore.
+//   5. Support / Resistance / TP1 / TP2 / Cut Loss are drawn as horizontal
+//      lines + background zones spanning 1 month before to 1 month after
+//      the realtime bar, each carrying its own clear text label.
+//   6. A dedicated Accumulation/Distribution read (Chaikin-style money-flow)
+//      is reported separately from the Bullish/Bearish trend read, per a
+//      classic Wyckoff-style two-axis assessment.
+//   7. "ENTRY - BUY : <price>" / "EXIT - SELL : <price>" (and, if shorting
+//      is enabled, "ENTRY - SELL" / "EXIT - BUY") are stamped directly on
+//      the trigger candle, limited to the last 30 days so old signals don't
+//      clutter history.
+//   8. One text size, one font family, and a strict 3-color palette
+//      (bullish / bearish / neutral) are used for every label, line and box
+//      in the script — nothing uses a second, inconsistent style.
+//   9. The old full-history swing zigzag (a line strung across every swing
+//      in the whole chart) is removed. The only pattern-shaped lines left
+//      are the few segments that trace the ACTIVE Double Top/Bottom or
+//      Head & Shoulders shape itself.
+//
+//   This is a technical-analysis tool to support discretionary decisions.
+//   Scores, grades and phase reads describe historical tendencies on THIS
+//   chart, not guarantees of what happens next.
+// ============================================================================
+indicator("IDX Analyzer PRO [IZA] v5 Unified", shorttitle = "IDXA-PROv5", overlay = true, max_lines_count = 100, max_labels_count = 150, max_boxes_count = 20, max_bars_back = 2000)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+gTrend  = "01. Trend & Regime"
+maFastLen = input.int(20, "MA Fast (EMA)", minval = 2, group = gTrend)
+maMidLen  = input.int(50, "MA Medium (EMA)", minval = 5, group = gTrend)
+maSlowLen = input.int(200, "MA Major (SMA)", minval = 20, group = gTrend)
+slopeBars = input.int(5, "MA Slope Lookback", minval = 1, group = gTrend)
+diLen     = input.int(14, "DMI Length", minval = 5, group = gTrend)
+adxSmooth = input.int(14, "ADX Smoothing", minval = 5, group = gTrend)
+adxTrend  = input.float(20.0, "ADX Trending Threshold", minval = 10, step = 1, group = gTrend)
+adxStrong = input.float(28.0, "ADX Strong Trend Threshold", minval = 15, step = 1, group = gTrend)
+
+gStructure = "02. Structure (shared pivots)"
+swingLen      = input.int(3, "Swing Pivot Size (bars L/R)", minval = 2, maxval = 25, group = gStructure, tooltip = "Feeds swing structure (HH/HL vs LH/LL), Support/Resistance, and the pattern engine off the SAME pivots.")
+maxPivots     = input.int(20, "Max Stored Pivots", minval = 10, maxval = 60, group = gStructure)
+useTrendGate  = input.bool(true, "Require Prior Trend Before A Pattern", group = gStructure, tooltip = "Rejects a Double Top/Bottom or H&S/iH&S not preceded by a genuine trend. Cuts false signals from sideways chop.")
+trendLookback = input.int(20, "Trend-Gate Lookback (bars)", minval = 5, maxval = 100, group = gStructure, active = useTrendGate)
+trendGatePct  = input.float(2.0, "Min Prior Trend For A Pattern (%)", minval = 0.0, maxval = 20.0, step = 0.5, group = gStructure, active = useTrendGate) / 100
+
+gLevel = "03. Levels, Entry & Risk"
+srLen          = input.int(60, "S/R Lookback", minval = 20, group = gLevel)
+atrLen         = input.int(14, "ATR Length", minval = 2, group = gLevel)
+srBreakoutBuf  = input.float(0.20, "S/R Breakout Buffer (ATR)", minval = 0.0, step = 0.05, group = gLevel)
+clusterATR     = input.float(0.45, "S/R Cluster Width (ATR)", minval = 0.10, step = 0.05, group = gLevel)
+zoneATR        = input.float(0.30, "Entry Zone Width (ATR)", minval = 0.05, step = 0.05, group = gLevel)
+stopATR        = input.float(0.35, "Stop Buffer (ATR)", minval = 0.05, step = 0.05, group = gLevel)
+minRR          = input.float(1.8, "Minimum R:R", minval = 0.5, step = 0.1, group = gLevel)
+maxExtension   = input.float(2.0, "Max Distance From MA Fast (ATR)", minval = 0.5, step = 0.25, group = gLevel)
+retestBars     = input.int(8, "Breakout Retest Window", minval = 2, maxval = 30, group = gLevel)
+
+gPattern = "04. Pattern Engine"
+patTolATR    = input.float(0.5, "Level Tolerance (ATR)", minval = 0.1, maxval = 2, step = 0.1, group = gPattern, tooltip = "How close two tops, two bottoms, or two shoulders must be to count as equal.")
+patBufATR    = input.float(0.15, "Neckline Break Buffer (ATR)", minval = 0, maxval = 1, step = 0.05, group = gPattern)
+minDepthATR  = input.float(1.0, "Minimum Pattern Depth (ATR)", minval = 0.25, step = 0.25, group = gPattern)
+maxPatternAge = input.int(100, "Maximum Pattern Age (bars)", minval = 20, maxval = 500, group = gPattern, tooltip = "A pattern whose most recent pivot is older than this is treated as stale and ignored, so a long-forgotten shape can't stay 'active' forever.")
+showDT  = input.bool(true, "Double Top", group = gPattern)
+showDB  = input.bool(true, "Double Bottom", group = gPattern)
+showHS  = input.bool(true, "Head & Shoulders", group = gPattern)
+showIHS = input.bool(true, "Inverse H&S", group = gPattern)
+
+gConfirm = "05. Confirmation, Volume & Liquidity"
+volLen       = input.int(20, "Volume Average Length", minval = 5, group = gConfirm)
+cmfLen       = input.int(20, "Akumulasi/Distribusi Length (CMF)", minval = 5, group = gConfirm)
+breakoutRVOL = input.float(1.40, "Breakout Minimum RVOL", minval = 0.5, step = 0.1, group = gConfirm)
+minRVOL      = input.float(0.80, "Minimum Setup RVOL", minval = 0.2, step = 0.1, group = gConfirm)
+rsiLen       = input.int(14, "RSI Length", minval = 2, group = gConfirm)
+mtfTF        = input.timeframe("W", "Higher Timeframe", group = gConfirm)
+useMarket    = input.bool(true, "Use Market Index Regime", group = gConfirm)
+marketSymbol = input.symbol("IDX:COMPOSITE", "Market Symbol", group = gConfirm)
+useSector    = input.bool(false, "Use Sector/Benchmark Relative Strength", group = gConfirm)
+sectorSymbol = input.symbol("IDX:COMPOSITE", "Sector/Benchmark Symbol", group = gConfirm)
+useLiquidity = input.bool(true, "Use Liquidity Filter", group = gConfirm)
+minValueBn   = input.float(5.0, "Min Avg Traded Value (Bn/day)", minval = 0.0, step = 1.0, group = gConfirm)
+
+gSignal = "06. Signal Quality"
+setupThreshold   = input.float(60, "Setup Score", minval = 40, maxval = 90, step = 1, group = gSignal)
+confirmThreshold = input.float(72, "Confirmed Score", minval = 50, maxval = 95, step = 1, group = gSignal)
+primeThreshold   = input.float(82, "A+ Prime Score", minval = 60, maxval = 100, step = 1, group = gSignal)
+minScoreEdge     = input.float(12, "Minimum Bull/Bear Score Edge", minval = 0, maxval = 40, step = 1, group = gSignal)
+enableShort      = input.bool(false, "Enable Short Entry/Exit Notation", group = gSignal, tooltip = "OFF (default): long-only, matching typical IDX cash-equity trading — only ENTRY-BUY / EXIT-SELL are shown. ON: also shows ENTRY-SELL / EXIT-BUY for short-capable instruments.")
+
+gDisplay = "07. Display"
+showStatusLabel      = input.bool(true, "Status Label (Trend / Fase / Grade)", group = gDisplay)
+showSR               = input.bool(true, "Support / Resistance Lines", group = gDisplay)
+showPlanZones        = input.bool(true, "Entry / TP1 / TP2 / Cut Loss (± 1 Month)", group = gDisplay)
+showPatternShape     = input.bool(true, "Active Pattern Shape Lines", group = gDisplay)
+showSignalLabels     = input.bool(true, "Entry / Exit Candle Notation", group = gDisplay)
+showCandlePatternTxt = input.bool(false, "Candlestick Pattern Tags (Last 1 Month)", group = gDisplay)
+
+gStyle = "08. Style"
+bullCol    = input.color(#089981, "Bullish Color", group = gStyle)
+bearCol    = input.color(#f23645, "Bearish Color", group = gStyle)
+neutralCol = input.color(#f0a020, "Neutral Color", group = gStyle)
+txtSizeS   = input.string("Small", "Text Size (used everywhere)", options = ["Tiny", "Small", "Normal", "Large"], group = gStyle)
+
+gLevelStyle = "09. Level Colors (Support/Resistance/TP/Cut Loss)"
+colSupport  = input.color(color.orange, "Support Line", group = gLevelStyle)
+colResist   = input.color(#43A047, "Resistance Line (Green)", group = gLevelStyle)
+colTP1      = input.color(#4FC3F7, "TP1 Line (Light Blue)", group = gLevelStyle)
+colTP2      = input.color(#0D47A1, "TP2 Line (Dark Blue)", group = gLevelStyle)
+colCutloss  = input.color(#FF1744, "Cut Loss Line (Red)", group = gLevelStyle)
+colBuyArea  = input.color(#66BB6A, "Entry-Buy Area (Light Green)", group = gLevelStyle)
+colSellArea = input.color(#EF5350, "Exit-Sell Area (Red)", group = gLevelStyle)
+planWeeks   = input.int(2, "Level Projection Forward (weeks)", minval = 1, maxval = 8, group = gLevelStyle)
+
+txtSize = txtSizeS == "Tiny" ? size.tiny : txtSizeS == "Normal" ? size.normal : txtSizeS == "Large" ? size.large : size.small
+const string TXT_FONT = font.family_monospace
+const int T50 = 50
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+f_fmt(float x) => na(x) ? "—" : str.tostring(x, format.mintick)
+f_pct(float x) => na(x) ? "—" : str.tostring(x, "#.##") + "%"
+f_clamp(float x, float lo, float hi) => math.max(lo, math.min(hi, x))
+// Tint a base color toward white by fraction t (0 = base hue, 1 = white),
+// always at a fixed 50% transparency — this is how "gradient area, all at
+// 50% transparency" is satisfied at once: color varies, alpha does not.
+f_tint(color c, float t) =>
+    r = int(color.r(c) + (255 - color.r(c)) * t)
+    g = int(color.g(c) + (255 - color.g(c)) * t)
+    b = int(color.b(c) + (255 - color.b(c)) * t)
+    color.rgb(r, g, b, T50)
+// Perceptual brightness test so label/box text stays readable on any of the
+// distinct level colors (dark text on light backgrounds, white on dark ones).
+f_textOn(color c) =>
+    bright = color.r(c) * 299 + color.g(c) * 587 + color.b(c) * 114
+    bright > 150000 ? color.black : color.white
+f_grade(float score, float rr, bool liquid, bool confirmed) =>
+    not confirmed ? (score >= setupThreshold ? "B — WAIT" : "D — NO TRADE") :
+     score >= primeThreshold and rr >= 2.0 and liquid ? "A+ — PRIME" :
+     score >= confirmThreshold and rr >= minRR ? "A — HIGH QUALITY" :
+     score >= setupThreshold ? "B — TRADABLE" : "C — SPECULATIVE"
+
+// ============================================================================
+// CORE CALCULATIONS
+// ============================================================================
+ma20  = ta.ema(close, maFastLen)
+ma50  = ta.ema(close, maMidLen)
+ma200 = ta.sma(close, maSlowLen)
+atr   = ta.atr(atrLen)
+atrPct= close != 0 ? atr / close * 100 : 0.0
+rsi   = ta.rsi(close, rsiLen)
+avgVol= ta.sma(volume, volLen)
+rvol  = avgVol > 0 ? volume / avgVol : 0.0
+avgValueBn = ta.sma(volume * close, volLen) / 1000000000.0
+liquidityOK = not useLiquidity or avgValueBn >= minValueBn
+closeLocation = high != low ? (close - low) / (high - low) : 0.5
+[plusDI, minusDI, adx] = ta.dmi(diLen, adxSmooth)
+
+ma20Up = ma20 > ma20[slopeBars]
+ma50Up = ma50 > ma50[slopeBars]
+ma200Up= ma200 > ma200[slopeBars]
+strongBullTrend = close > ma20 and ma20 > ma50 and ma50 > ma200 and ma20Up and ma50Up and ma200Up
+bullTrend = close > ma20 and ma20 > ma50 and ma20Up
+strongBearTrend = close < ma20 and ma20 < ma50 and ma50 < ma200 and not ma20Up and not ma50Up and not ma200Up
+bearTrend = close < ma20 and ma20 < ma50 and not ma20Up
+trendBias = strongBullTrend ? 2 : bullTrend ? 1 : strongBearTrend ? -2 : bearTrend ? -1 : 0
+trendText = trendBias >= 1 ? "BULLISH" : trendBias <= -1 ? "BEARISH" : "SIDEWAYS/TRANSISI"
+regimeText = adx >= adxStrong ? "STRONG TREND" : adx >= adxTrend ? "TRENDING" : "RANGE / WEAK"
+
+// Accumulation / Distribution — Chaikin-style money flow, reported as its
+// own axis alongside (not instead of) the Bullish/Bearish trend read above.
+mfm = (high - low) != 0 ? ((close - low) - (high - close)) / (high - low) : 0.0
+mfv = mfm * volume
+cmf = math.sum(mfv, cmfLen) / math.sum(volume, cmfLen)
+phaseBias = cmf >= 0.05 ? 1 : cmf <= -0.05 ? -1 : 0
+phaseText = phaseBias == 1 ? "AKUMULASI" : phaseBias == -1 ? "DISTRIBUSI" : "NETRAL"
+
+// ============================================================================
+// SHARED PIVOT / ZIGZAG STORE
+// Feeds swing structure, clustered S/R, AND the pattern engine off the SAME
+// alternating pivot sequence — no more duplicated pivot detection.
+// zzB = bar index, zzP = price, zzD = direction (1 high / -1 low),
+// zzT = prior-trend % into the pivot (used by the pattern trend gate).
+// ============================================================================
+var array<int>   zzB = array.new<int>()
+var array<float> zzP = array.new<float>()
+var array<int>   zzD = array.new<int>()
+var array<float> zzT = array.new<float>()
+
+ph = ta.pivothigh(swingLen, swingLen)
+pl = ta.pivotlow(swingLen, swingLen)
+
+f_pivotTrend(int back) =>
+    refC = close[back + trendLookback]
+    pivC = close[back]
+    refC != 0 ? (pivC - refC) / refC : 0.0
+
+f_zzPush(int b, float pr, int d, float tr) =>
+    n = array.size(zzD)
+    if n == 0
+        array.push(zzB, b)
+        array.push(zzP, pr)
+        array.push(zzD, d)
+        array.push(zzT, tr)
+    else
+        li = n - 1
+        if array.get(zzD, li) == d
+            lp = array.get(zzP, li)
+            if (d == 1 and pr > lp) or (d == -1 and pr < lp)
+                array.set(zzP, li, pr)
+                array.set(zzB, li, b)
+                array.set(zzT, li, tr)
+        else
+            array.push(zzB, b)
+            array.push(zzP, pr)
+            array.push(zzD, d)
+            array.push(zzT, tr)
+    while array.size(zzD) > maxPivots
+        array.shift(zzB)
+        array.shift(zzP)
+        array.shift(zzD)
+        array.shift(zzT)
+    true
+
+if barstate.isconfirmed
+    if not na(ph)
+        f_zzPush(bar_index - swingLen, ph, 1, f_pivotTrend(swingLen))
+    if not na(pl)
+        f_zzPush(bar_index - swingLen, pl, -1, f_pivotTrend(swingLen))
+
+f_lastTwo(int dir) =>
+    float p1 = na
+    float p2 = na
+    found = 0
+    i = array.size(zzD) - 1
+    while i >= 0 and found < 2
+        if array.get(zzD, i) == dir
+            if found == 0
+                p2 := array.get(zzP, i)
+            else
+                p1 := array.get(zzP, i)
+            found += 1
+        i -= 1
+    [p1, p2, found]
+
+[prevPH, lastPH, hFound] = f_lastTwo(1)
+[prevPL, lastPL, lFound] = f_lastTwo(-1)
+hh = hFound == 2 and lastPH > prevPH
+hl = lFound == 2 and lastPL > prevPL
+lh = hFound == 2 and lastPH < prevPH
+ll = lFound == 2 and lastPL < prevPL
+structureBias = hh and hl ? 1 : lh and ll ? -1 : 0
+structureText = structureBias == 1 ? "HH + HL" : structureBias == -1 ? "LH + LL" : "MIXED / RANGE"
+
+// ============================================================================
+// CLUSTERED SUPPORT / RESISTANCE
+// ============================================================================
+rawSupport = not na(lastPL) and lastPL < close ? lastPL : ta.lowest(low, srLen)[1]
+rawResistance = not na(lastPH) and lastPH > close ? lastPH : ta.highest(high, srLen)[1]
+supportClustered = lFound == 2 and math.abs(lastPL - prevPL) <= atr * clusterATR ? (lastPL + prevPL) / 2.0 : rawSupport
+resistanceClustered = hFound == 2 and math.abs(lastPH - prevPH) <= atr * clusterATR ? (lastPH + prevPH) / 2.0 : rawResistance
+support1 = supportClustered
+resist1  = resistanceClustered
+support2 = ta.lowest(low, srLen * 2)[1]
+resist2  = ta.highest(high, srLen * 2)[1]
+supportZoneLow  = support1 - atr * clusterATR * 0.5
+supportZoneHigh = support1 + atr * clusterATR * 0.5
+resistZoneLow   = resist1 - atr * clusterATR * 0.5
+resistZoneHigh  = resist1 + atr * clusterATR * 0.5
+
+// ============================================================================
+// PATTERN ENGINE — Double Top/Bottom, Head & Shoulders / Inverse H&S.
+// Recomputed fresh every bar from the shared pivot store (stateless — only
+// the CURRENT live pattern is ever reported, no persisted history/table).
+// ============================================================================
+tol = atr * patTolATR
+buf = atr * patBufATR
+
+f_pattern() =>
+    array<int>   px = array.new<int>()
+    array<float> py = array.new<float>()
+    int bias = 0
+    string name = "NONE"
+    float neckline = na
+    float target = na
+    bool confirmed = false
+    bool geomOk = false
+    n = array.size(zzD)
+    bool fresh = true
+    if n > 0
+        fresh := bar_index - array.get(zzB, n - 1) <= maxPatternAge
+    if n >= 5 and fresh
+        i0 = n - 5
+        dir0 = array.get(zzD, i0)
+        lsV  = array.get(zzP, i0)
+        t1V  = array.get(zzP, i0 + 1)
+        hdV  = array.get(zzP, i0 + 2)
+        t2V  = array.get(zzP, i0 + 3)
+        rsV  = array.get(zzP, i0 + 4)
+        lsBar = array.get(zzB, i0)
+        b1Bar = array.get(zzB, i0 + 1)
+        hdBar = array.get(zzB, i0 + 2)
+        b2Bar = array.get(zzB, i0 + 3)
+        lsTrend = array.get(zzT, i0)
+        slope = b2Bar != b1Bar ? (t2V - t1V) / (b2Bar - b1Bar) : 0.0
+        neckNow = t1V + slope * (bar_index - b1Bar)
+        if dir0 == 1 and showHS and hdV > lsV + tol and hdV > rsV + tol and math.abs(lsV - rsV) <= 2 * tol
+            trendOk = not useTrendGate or lsTrend >= trendGatePct
+            if trendOk
+                neckAtHead = t1V + slope * (hdBar - b1Bar)
+                height = hdV - neckAtHead
+                geomOk := height >= atr * minDepthATR
+                if geomOk
+                    bias := -1
+                    name := "HEAD & SHOULDERS"
+                    neckline := neckNow
+                    target := neckNow - height
+                    confirmed := close < neckNow - buf
+                    array.push(px, lsBar)
+                    array.push(py, lsV)
+                    array.push(px, b1Bar)
+                    array.push(py, t1V)
+                    array.push(px, hdBar)
+                    array.push(py, hdV)
+                    array.push(px, b2Bar)
+                    array.push(py, t2V)
+                    array.push(px, array.get(zzB, i0 + 4))
+                    array.push(py, rsV)
+        else if dir0 == -1 and showIHS and hdV < lsV - tol and hdV < rsV - tol and math.abs(lsV - rsV) <= 2 * tol
+            trendOk = not useTrendGate or lsTrend <= -trendGatePct
+            if trendOk
+                neckAtHead = t1V + slope * (hdBar - b1Bar)
+                height = neckAtHead - hdV
+                geomOk := height >= atr * minDepthATR
+                if geomOk
+                    bias := 1
+                    name := "INVERSE H&S"
+                    neckline := neckNow
+                    target := neckNow + height
+                    confirmed := close > neckNow + buf
+                    array.push(px, lsBar)
+                    array.push(py, lsV)
+                    array.push(px, b1Bar)
+                    array.push(py, t1V)
+                    array.push(px, hdBar)
+                    array.push(py, hdV)
+                    array.push(px, b2Bar)
+                    array.push(py, t2V)
+                    array.push(px, array.get(zzB, i0 + 4))
+                    array.push(py, rsV)
+    if bias == 0 and n >= 3 and fresh
+        i0 = n - 3
+        d3 = array.get(zzD, n - 1)
+        p1V = array.get(zzP, i0)
+        midV = array.get(zzP, i0 + 1)
+        p2V = array.get(zzP, i0 + 2)
+        p1Bar = array.get(zzB, i0)
+        midBar = array.get(zzB, i0 + 1)
+        p2Bar = array.get(zzB, i0 + 2)
+        p1Trend = array.get(zzT, i0)
+        if d3 == 1 and showDT and math.abs(p1V - p2V) <= tol and math.min(p1V, p2V) - midV > 1.5 * tol
+            trendOk = not useTrendGate or p1Trend >= trendGatePct
+            if trendOk
+                height = math.max(p1V, p2V) - midV
+                geomOk := height >= atr * minDepthATR
+                if geomOk
+                    bias := -1
+                    name := "DOUBLE TOP"
+                    neckline := midV
+                    target := midV - height
+                    confirmed := close < midV - buf
+                    array.push(px, p1Bar)
+                    array.push(py, p1V)
+                    array.push(px, midBar)
+                    array.push(py, midV)
+                    array.push(px, p2Bar)
+                    array.push(py, p2V)
+        else if d3 == -1 and showDB and math.abs(p1V - p2V) <= tol and midV - math.max(p1V, p2V) > 1.5 * tol
+            trendOk = not useTrendGate or p1Trend <= -trendGatePct
+            if trendOk
+                height = midV - math.min(p1V, p2V)
+                geomOk := height >= atr * minDepthATR
+                if geomOk
+                    bias := 1
+                    name := "DOUBLE BOTTOM"
+                    neckline := midV
+                    target := midV + height
+                    confirmed := close > midV + buf
+                    array.push(px, p1Bar)
+                    array.push(py, p1V)
+                    array.push(px, midBar)
+                    array.push(py, midV)
+                    array.push(px, p2Bar)
+                    array.push(py, p2V)
+    [bias, name, neckline, target, confirmed, geomOk, px, py]
+
+[patternBias, patternName, patternNeckline, patternTarget, patternConfirmed, patternGeomOk, patPx, patPy] = f_pattern()
+patternJustConfirmed = patternConfirmed and not patternConfirmed[1]
+
+// ============================================================================
+// BREAKOUT / RETEST / CANDLES
+// ============================================================================
+breakBuffer = atr * srBreakoutBuf
+bullBreakout = not na(resistZoneHigh) and close > resistZoneHigh + breakBuffer and close[1] <= resistZoneHigh[1] + breakBuffer
+bearBreakdown = not na(supportZoneLow) and close < supportZoneLow - breakBuffer and close[1] >= supportZoneLow[1] - breakBuffer
+breakoutVolumeOK = rvol >= breakoutRVOL and (bullBreakout ? closeLocation >= 0.65 : bearBreakdown ? closeLocation <= 0.35 : true)
+falseBullBreak = bullBreakout and (rvol < 1.0 or closeLocation < 0.50)
+falseBearBreak = bearBreakdown and (rvol < 1.0 or closeLocation > 0.50)
+
+barsSinceBullBreak = ta.barssince(bullBreakout and breakoutVolumeOK)
+barsSinceBearBreak = ta.barssince(bearBreakdown and breakoutVolumeOK)
+bullRetest = barsSinceBullBreak >= 1 and barsSinceBullBreak <= retestBars and low <= resistZoneHigh + atr * 0.20 and close > resistZoneHigh and close > open
+bearRetest = barsSinceBearBreak >= 1 and barsSinceBearBreak <= retestBars and high >= supportZoneLow - atr * 0.20 and close < supportZoneLow and close < open
+
+body = math.abs(close - open)
+candleRange = math.max(high - low, syminfo.mintick)
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+bullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearEngulf = close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
+hammer = lowerWick >= body * 2 and upperWick <= math.max(body, syminfo.mintick) and closeLocation > 0.55
+shootingStar = upperWick >= body * 2 and lowerWick <= math.max(body, syminfo.mintick) and closeLocation < 0.45
+bullCandleConfirm = bullEngulf or hammer or (close > open and body / candleRange > 0.65)
+bearCandleConfirm = bearEngulf or shootingStar or (close < open and body / candleRange > 0.65)
+candleText = bullEngulf ? "BULL ENGULF" : bearEngulf ? "BEAR ENGULF" : hammer ? "HAMMER" : shootingStar ? "SHOOTING STAR" : body / candleRange > 0.65 ? "MARUBOZU" : body / candleRange < 0.10 ? "DOJI" : "NEUTRAL"
+
+// ============================================================================
+// MARKET, MTF & RELATIVE STRENGTH
+// ============================================================================
+currentSymbol = syminfo.tickerid
+[mClose, m20, m50] = request.security(marketSymbol, timeframe.period, [close, ta.ema(close, 20), ta.ema(close, 50)], ignore_invalid_symbol = true)
+marketBias = not useMarket or na(mClose) ? 0 : mClose > m20 and m20 > m50 ? 1 : mClose < m20 and m20 < m50 ? -1 : 0
+[htfClose, htf20, htf50] = request.security(currentSymbol, mtfTF, [close, ta.ema(close, 20), ta.ema(close, 50)], ignore_invalid_symbol = true)
+mtfBias = htfClose > htf20 and htf20 > htf50 ? 1 : htfClose < htf20 and htf20 < htf50 ? -1 : 0
+benchClose = request.security(sectorSymbol, timeframe.period, close, ignore_invalid_symbol = true)
+rsRatio = useSector and not na(benchClose) and benchClose != 0 ? close / benchClose : na
+rsMA = ta.ema(rsRatio, 20)
+rsBias = not useSector or na(rsRatio) ? 0 : rsRatio > rsMA and rsMA > rsMA[5] ? 1 : rsRatio < rsMA and rsMA < rsMA[5] ? -1 : 0
+
+// ============================================================================
+// INDEPENDENT BULL / BEAR SCORE
+// Not bullish is NOT automatically bearish — both can be low in a range.
+// ============================================================================
+float bullScore = 5.0
+float bearScore = 5.0
+bullScore += trendBias == 2 ? 20 : trendBias == 1 ? 12 : 0
+bearScore += trendBias == -2 ? 20 : trendBias == -1 ? 12 : 0
+bullScore += structureBias == 1 ? 15 : structureBias == 0 and hl ? 7 : 0
+bearScore += structureBias == -1 ? 15 : structureBias == 0 and lh ? 7 : 0
+bullScore += mtfBias == 1 ? 10 : 0
+bearScore += mtfBias == -1 ? 10 : 0
+bullScore += marketBias == 1 ? 8 : marketBias == 0 ? 3 : 0
+bearScore += marketBias == -1 ? 8 : marketBias == 0 ? 3 : 0
+bullScore += rsBias == 1 ? 6 : not useSector ? 3 : 0
+bearScore += rsBias == -1 ? 6 : not useSector ? 3 : 0
+bullScore += phaseBias == 1 ? 5 : 0
+bearScore += phaseBias == -1 ? 5 : 0
+bullScore += patternBias == 1 and patternGeomOk ? (patternConfirmed ? 12 : 7) : 0
+bearScore += patternBias == -1 and patternGeomOk ? (patternConfirmed ? 12 : 7) : 0
+bullScore += bullBreakout and breakoutVolumeOK ? 12 : bullRetest ? 10 : 0
+bearScore += bearBreakdown and breakoutVolumeOK ? 12 : bearRetest ? 10 : 0
+bullScore += bullCandleConfirm ? 5 : 0
+bearScore += bearCandleConfirm ? 5 : 0
+bullScore += rsi >= 50 and rsi <= 72 ? 5 : rsi > 72 and rsi < 80 ? 2 : 0
+bearScore += rsi <= 50 and rsi >= 28 ? 5 : rsi < 28 and rsi > 20 ? 2 : 0
+bullScore += adx >= adxTrend and plusDI > minusDI ? (adx >= adxStrong ? 7 : 5) : adx < adxTrend and close > ma20 ? 2 : 0
+bearScore += adx >= adxTrend and minusDI > plusDI ? (adx >= adxStrong ? 7 : 5) : adx < adxTrend and close < ma20 ? 2 : 0
+bullScore += rvol >= breakoutRVOL ? 3 : rvol >= minRVOL ? 1 : 0
+bearScore += rvol >= breakoutRVOL ? 3 : rvol >= minRVOL ? 1 : 0
+bullScore += liquidityOK ? 2 : 0
+bearScore += liquidityOK ? 2 : 0
+bullScore -= falseBullBreak ? 18 : rsi >= 82 ? 6 : 0
+bearScore -= falseBearBreak ? 18 : rsi <= 18 ? 6 : 0
+bullScore := f_clamp(bullScore, 0, 100)
+bearScore := f_clamp(bearScore, 0, 100)
+scoreEdge = bullScore - bearScore
+neutralScore = f_clamp(100 - math.max(bullScore, bearScore), 0, 100)
+
+// ============================================================================
+// TRADING PLAN — entry, stop, market-aware TP1/TP2
+// ============================================================================
+extendedLong = close - ma20 > atr * maxExtension
+extendedShort = ma20 - close > atr * maxExtension
+nearSupport = not na(support1) and low <= supportZoneHigh + atr * 0.25 and close >= supportZoneLow
+nearResistance = not na(resist1) and high >= resistZoneLow - atr * 0.25 and close <= resistZoneHigh
+
+longEvidence = (bullBreakout and breakoutVolumeOK) or bullRetest or (patternBias == 1 and patternConfirmed and rvol >= 1.0) or (nearSupport and bullCandleConfirm and structureBias >= 0)
+shortEvidence = (bearBreakdown and breakoutVolumeOK) or bearRetest or (patternBias == -1 and patternConfirmed and rvol >= 1.0) or (nearResistance and bearCandleConfirm and structureBias <= 0)
+
+longSetup = bullScore >= setupThreshold and scoreEdge >= minScoreEdge and trendBias >= 0 and mtfBias >= 0 and liquidityOK and rvol >= minRVOL and not extendedLong and not falseBullBreak
+shortSetup = bearScore >= setupThreshold and -scoreEdge >= minScoreEdge and trendBias <= 0 and mtfBias <= 0 and liquidityOK and rvol >= minRVOL and not extendedShort and not falseBearBreak
+longConfirmed = longSetup and bullScore >= confirmThreshold and longEvidence
+shortConfirmed = shortSetup and bearScore >= confirmThreshold and shortEvidence
+
+longEntryMid = bullRetest ? resistZoneHigh + atr * 0.05 : bullBreakout ? resistZoneHigh + breakBuffer * 0.5 : nearSupport ? support1 + atr * 0.20 : close
+longEntryLow = longEntryMid - atr * zoneATR
+longEntryHigh= longEntryMid + atr * zoneATR
+longStopBase = not na(supportZoneLow) ? supportZoneLow - atr * stopATR : longEntryLow - atr
+longStop = math.min(longStopBase, longEntryLow - atr * stopATR)
+longRisk = math.max(longEntryMid - longStop, syminfo.mintick)
+longRRTarget1 = longEntryMid + longRisk * 2.0
+longRRTarget2 = longEntryMid + longRisk * 3.0
+longStructT1 = not na(resist1) and resist1 > longEntryHigh + longRisk * minRR ? resist1 : na
+longStructT2 = not na(resist2) and resist2 > longEntryHigh ? resist2 : na
+longTP1 = not na(longStructT1) ? math.min(longRRTarget1, longStructT1) : longRRTarget1
+longTP1 := longTP1 <= longEntryMid ? longRRTarget1 : longTP1
+longTP2Candidate = not na(patternTarget) and patternTarget > longTP1 ? patternTarget : not na(longStructT2) and longStructT2 > longTP1 ? longStructT2 : longRRTarget2
+longTP2 = math.max(longTP1 + longRisk * 0.5, math.min(longRRTarget2, longTP2Candidate))
+longRR1 = (longTP1 - longEntryMid) / longRisk
+longRR2 = (longTP2 - longEntryMid) / longRisk
+
+shortEntryMid = bearRetest ? supportZoneLow - atr * 0.05 : bearBreakdown ? supportZoneLow - breakBuffer * 0.5 : nearResistance ? resist1 - atr * 0.20 : close
+shortEntryLow = shortEntryMid - atr * zoneATR
+shortEntryHigh= shortEntryMid + atr * zoneATR
+shortStopBase = not na(resistZoneHigh) ? resistZoneHigh + atr * stopATR : shortEntryHigh + atr
+shortStop = math.max(shortStopBase, shortEntryHigh + atr * stopATR)
+shortRisk = math.max(shortStop - shortEntryMid, syminfo.mintick)
+shortRRTarget1 = shortEntryMid - shortRisk * 2.0
+shortRRTarget2 = shortEntryMid - shortRisk * 3.0
+shortStructT1 = not na(support1) and support1 < shortEntryLow - shortRisk * minRR ? support1 : na
+shortStructT2 = not na(support2) and support2 < shortEntryLow ? support2 : na
+shortTP1 = not na(shortStructT1) ? math.max(shortRRTarget1, shortStructT1) : shortRRTarget1
+shortTP1 := shortTP1 >= shortEntryMid ? shortRRTarget1 : shortTP1
+shortTP2Candidate = not na(patternTarget) and patternTarget < shortTP1 ? patternTarget : not na(shortStructT2) and shortStructT2 < shortTP1 ? shortStructT2 : shortRRTarget2
+shortTP2 = math.min(shortTP1 - shortRisk * 0.5, math.max(shortRRTarget2, shortTP2Candidate))
+shortRR1 = (shortEntryMid - shortTP1) / shortRisk
+shortRR2 = (shortEntryMid - shortTP2) / shortRisk
+
+longQualified = longConfirmed and longRR1 >= minRR
+shortQualified = enableShort and shortConfirmed and shortRR1 >= minRR
+
+longExit = (close < ma20 and close[1] >= ma20[1] and bearCandleConfirm) or (nearResistance and bearCandleConfirm and bearScore >= setupThreshold) or (bearBreakdown and breakoutVolumeOK)
+shortCover = enableShort and ((close > ma20 and close[1] <= ma20[1] and bullCandleConfirm) or (nearSupport and bullCandleConfirm and bullScore >= setupThreshold) or (bullBreakout and breakoutVolumeOK))
+
+activeLong = bullScore > bearScore and scoreEdge >= minScoreEdge
+activeShort = enableShort and bearScore > bullScore and -scoreEdge >= minScoreEdge
+activeDirection = activeLong ? 1 : activeShort ? -1 : 0
+entryLow = activeLong ? longEntryLow : activeShort ? shortEntryLow : na
+entryHigh= activeLong ? longEntryHigh : activeShort ? shortEntryHigh : na
+stopPrice= activeLong ? longStop : activeShort ? shortStop : na
+tp1Price = activeLong ? longTP1 : activeShort ? shortTP1 : na
+tp2Price = activeLong ? longTP2 : activeShort ? shortTP2 : na
+rr1 = activeLong ? longRR1 : activeShort ? shortRR1 : na
+rr2 = activeLong ? longRR2 : activeShort ? shortRR2 : na
+activeScore = activeLong ? bullScore : activeShort ? bearScore : math.max(bullScore, bearScore)
+confirmedNow = activeLong ? longQualified : activeShort ? shortQualified : false
+grade = f_grade(activeScore, nz(rr1, 0), liquidityOK, confirmedNow)
+action = longQualified ? "BUY / ENTRY" : shortQualified ? "SELL / SHORT" : longExit ? "SELL / EXIT" : longSetup ? "BUY SETUP — WAIT" : shortSetup and enableShort ? "SELL SETUP — WAIT" : extendedLong and bullScore >= setupThreshold ? "DO NOT CHASE" : falseBullBreak ? "BULL TRAP RISK" : falseBearBreak ? "BEAR TRAP RISK" : "WATCH / NO TRADE"
+
+// ============================================================================
+// ENTRY / EXIT CANDLE NOTATION — last 30 days only
+// ============================================================================
+const int MONTH_MS = 30 * 24 * 60 * 60 * 1000
+inMonthWindow = time >= timenow - MONTH_MS
+
+newLong = longQualified and not longQualified[1]
+newShort = shortQualified and not shortQualified[1]
+newExit = longExit and not longExit[1]
+newShortCover = shortCover and not shortCover[1]
+
+if showSignalLabels and inMonthWindow and newLong
+    label.new(bar_index, low - atr * 0.40, "ENTRY - BUY : " + f_fmt(close), style = label.style_label_up, color = color.new(bullCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+if showSignalLabels and inMonthWindow and newExit
+    label.new(bar_index, high + atr * 0.40, "EXIT - SELL : " + f_fmt(close), style = label.style_label_down, color = color.new(bearCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+if enableShort and showSignalLabels and inMonthWindow and newShort
+    label.new(bar_index, high + atr * 0.40, "ENTRY - SELL : " + f_fmt(close), style = label.style_label_down, color = color.new(bearCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+if enableShort and showSignalLabels and inMonthWindow and newShortCover
+    label.new(bar_index, low - atr * 0.40, "EXIT - BUY : " + f_fmt(close), style = label.style_label_up, color = color.new(bullCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+
+if showCandlePatternTxt and inMonthWindow and bullEngulf
+    label.new(bar_index, low, "Bull Engulf", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(bullCol, T85), textcolor = bullCol, size = txtSize, text_font_family = TXT_FONT)
+if showCandlePatternTxt and inMonthWindow and bearEngulf
+    label.new(bar_index, high, "Bear Engulf", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(bearCol, T85), textcolor = bearCol, size = txtSize, text_font_family = TXT_FONT)
+if showCandlePatternTxt and inMonthWindow and hammer
+    label.new(bar_index, low, "Hammer", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(bullCol, T85), textcolor = bullCol, size = txtSize, text_font_family = TXT_FONT)
+if showCandlePatternTxt and inMonthWindow and shootingStar
+    label.new(bar_index, high, "Shooting Star", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(bearCol, T85), textcolor = bearCol, size = txtSize, text_font_family = TXT_FONT)
+
+// ============================================================================
+// LIVE CHART LAYER — status label, S/R lines, plan zones (± 1 month),
+// active pattern shape. Cleared and redrawn on every tick so the chart
+// always reflects the CURRENT read (never repaints history).
+// ============================================================================
+var label statusLbl   = na
+var line   srSupportLn = na
+var label  srSupportLbl= na
+var line   srResistLn  = na
+var label  srResistLbl = na
+var line   tp1Ln = na
+var label  tp1Lbl = na
+var line   tp2Ln = na
+var label  tp2Lbl = na
+var line   stopLn = na
+var label  stopLbl = na
+var box    buyAreaBx = na
+var box    sellAreaBx = na
+var line[] patLines = array.new<line>()
+var line   patNeckLn = na
+var label  patTagLbl = na
+
+f_clearLive() =>
+    label.delete(statusLbl)
+    line.delete(srSupportLn)
+    label.delete(srSupportLbl)
+    line.delete(srResistLn)
+    label.delete(srResistLbl)
+    line.delete(tp1Ln)
+    label.delete(tp1Lbl)
+    line.delete(tp2Ln)
+    label.delete(tp2Lbl)
+    line.delete(stopLn)
+    label.delete(stopLbl)
+    box.delete(buyAreaBx)
+    box.delete(sellAreaBx)
+    if array.size(patLines) > 0
+        for i = 0 to array.size(patLines) - 1
+            line.delete(array.get(patLines, i))
+    array.clear(patLines)
+    line.delete(patNeckLn)
+    label.delete(patTagLbl)
+    true
+
+monthStartTime = time - MONTH_MS
+monthEndTime = time + MONTH_MS
+statusAnchorY = ta.highest(high, 20) + atr * 1.5
+
+if barstate.islast
+    f_clearLive()
+
+    // ── Status label — replaces the old dashboard table ──
+    if showStatusLabel
+        anchorY = statusAnchorY
+        biasCol = trendBias >= 1 ? bullCol : trendBias <= -1 ? bearCol : neutralCol
+        statusTxt = syminfo.ticker + " " + timeframe.period + "  |  IDXA PRO v5\n" +
+                     "Trend: " + trendText + "   Fase: " + phaseText + "\n" +
+                     "Regime: " + regimeText + " (ADX " + str.tostring(adx, "#.0") + ")   RSI " + str.tostring(rsi, "#.0") + "\n" +
+                     "Action: " + action + "\n" +
+                     "Grade: " + grade + "   Score B/S " + str.tostring(bullScore, "#") + "/" + str.tostring(bearScore, "#")
+        statusLbl := label.new(bar_index + 2, anchorY, statusTxt, style = label.style_label_down, color = color.new(biasCol, T55), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+
+    // ── Support / Resistance ──
+    if showSR
+        srSupportLn := line.new(monthStartTime, support1, monthEndTime, support1, xloc = xloc.bar_time, color = color.new(bullCol, T35), style = line.style_dashed, width = 2)
+        srSupportLbl := label.new(monthEndTime, support1, "Support: " + f_fmt(support1), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(bullCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+        srResistLn := line.new(monthStartTime, resist1, monthEndTime, resist1, xloc = xloc.bar_time, color = color.new(bearCol, T35), style = line.style_dashed, width = 2)
+        srResistLbl := label.new(monthEndTime, resist1, "Resistance: " + f_fmt(resist1), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(bearCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+
+    // ── Entry / TP1 / TP2 / Cut Loss plan, ± 1 month ──
+    if showPlanZones and activeDirection != 0
+        tp1Ln := line.new(monthStartTime, tp1Price, monthEndTime, tp1Price, xloc = xloc.bar_time, color = color.new(bullCol, T35), style = line.style_dashed, width = 2)
+        tp1Lbl := label.new(monthEndTime, tp1Price, "TP1: " + f_fmt(tp1Price) + " (RR 1:" + str.tostring(rr1, "#.##") + ")", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(bullCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+        tp2Ln := line.new(monthStartTime, tp2Price, monthEndTime, tp2Price, xloc = xloc.bar_time, color = color.new(bullCol, T35), style = line.style_dotted, width = 1)
+        tp2Lbl := label.new(monthEndTime, tp2Price, "TP2: " + f_fmt(tp2Price) + " (RR 1:" + str.tostring(rr2, "#.##") + ")", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(bullCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+        stopLn := line.new(monthStartTime, stopPrice, monthEndTime, stopPrice, xloc = xloc.bar_time, color = color.new(bearCol, T35), style = line.style_dashed, width = 2)
+        stopLbl := label.new(monthEndTime, stopPrice, "Cut Loss: " + f_fmt(stopPrice), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(bearCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+        if activeLong
+            buyAreaBx := box.new(monthStartTime, entryHigh, monthEndTime, entryLow, xloc = xloc.bar_time, bgcolor = color.new(bullCol, T90), border_color = color.new(bullCol, T55), text = "BUY AREA", text_color = color.white, text_size = txtSize, text_font_family = TXT_FONT)
+        else if activeShort
+            sellAreaBx := box.new(monthStartTime, entryHigh, monthEndTime, entryLow, xloc = xloc.bar_time, bgcolor = color.new(bearCol, T90), border_color = color.new(bearCol, T55), text = "SELL AREA", text_color = color.white, text_size = txtSize, text_font_family = TXT_FONT)
+
+    // ── Active pattern shape — only the live pattern's own points, no
+    //    full-history zigzag ──
+    if showPatternShape and patternBias != 0 and array.size(patPx) >= 2
+        patCol = patternBias == -1 ? bearCol : bullCol
+        for i = 0 to array.size(patPx) - 2
+            ln = line.new(array.get(patPx, i), array.get(patPy, i), array.get(patPx, i + 1), array.get(patPy, i + 1), color = patCol, width = 2)
+            array.push(patLines, ln)
+        firstBar = array.get(patPx, 0)
+        lastBar = array.get(patPx, array.size(patPx) - 1)
+        patNeckLn := line.new(firstBar, patternNeckline, math.max(lastBar, bar_index), patternNeckline, color = color.new(patCol, T35), style = line.style_dashed, width = 1)
+        tagY = array.get(patPy, array.size(patPy) - 1)
+        patTagLbl := label.new(array.get(patPx, array.size(patPx) - 1), tagY, patternName + (patternConfirmed ? " ✓" : " — forming") + (not na(patternTarget) ? "  target " + f_fmt(patternTarget) : ""), style = patternBias == -1 ? label.style_label_down : label.style_label_up, color = color.new(patCol, T15), textcolor = color.white, size = txtSize, text_font_family = TXT_FONT)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+anySignal = newLong or newExit or (enableShort and (newShort or newShortCover)) or (bullBreakout and breakoutVolumeOK) or falseBullBreak or falseBearBreak
+
+alertcondition(anySignal, "IDXA PRO v5 — Any Signal", "IDXA PRO v5 signal on {{ticker}} at {{close}}. Open chart for details.")
+alertcondition(newLong, "IDXA PRO v5 — ENTRY - BUY", "{{ticker}} ENTRY - BUY at {{close}}")
+alertcondition(newExit, "IDXA PRO v5 — EXIT - SELL", "{{ticker}} EXIT - SELL at {{close}}")
+alertcondition(newShort, "IDXA PRO v5 — ENTRY - SELL", "{{ticker}} ENTRY - SELL at {{close}}")
+alertcondition(newShortCover, "IDXA PRO v5 — EXIT - BUY", "{{ticker}} EXIT - BUY at {{close}}")
+alertcondition(bullBreakout and breakoutVolumeOK, "IDXA PRO v5 — Valid Breakout", "Valid resistance breakout with volume on {{ticker}} at {{close}}")
+alertcondition(falseBullBreak, "IDXA PRO v5 — Bull Trap Risk", "Thin/weak bullish breakout on {{ticker}} at {{close}}")
+alertcondition(falseBearBreak, "IDXA PRO v5 — Bear Trap Risk", "Thin/weak bearish breakdown on {{ticker}} at {{close}}")
+alertcondition(patternJustConfirmed and patternBias == 1, "IDXA PRO v5 — Bullish Pattern Confirmed", "Bullish pattern confirmed on {{ticker}} at {{close}}")
+alertcondition(patternJustConfirmed and patternBias == -1, "IDXA PRO v5 — Bearish Pattern Confirmed", "Bearish pattern confirmed on {{ticker}} at {{close}}")
+
+// ============================================================================
+// DATA WINDOW — for screening/debugging, never drawn on the chart
+// ============================================================================
+plot(bullScore, "Bull Score", display = display.data_window)
+plot(bearScore, "Bear Score", display = display.data_window)
+plot(neutralScore, "Neutral Score", display = display.data_window)
+plot(adx, "ADX", display = display.data_window)
+plot(rvol, "Relative Volume", display = display.data_window)
+plot(cmf, "CMF (Akumulasi/Distribusi)", display = display.data_window)
+plot(avgValueBn, "Avg Traded Value (Bn)", display = display.data_window)
+plot(atrPct, "ATR %", display = display.data_window)
+plot(anySignal ? 1 : 0, "Any Signal", display = display.data_window)

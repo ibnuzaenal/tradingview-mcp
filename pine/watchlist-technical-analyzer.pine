@@ -1,0 +1,589 @@
+//@version=6
+// ============================================================================
+// IDX Analyzer [IZA] — native Pine Script v6 indicator
+//
+// HOW TO USE:
+//   1. TradingView Desktop/Web → Pine Editor → New blank indicator.
+//   2. Select all, paste this entire file, click "Add to chart".
+//   3. It redraws itself live as new bars/ticks arrive (no external script
+//      needed) — this is the Pine equivalent of scripts/watchlist-annotate.mjs.
+//
+// It only draws anything when the chart's ticker is in the WATCHLIST array
+// below — applying it to any other symbol shows one quiet notice and
+// nothing else. Edit WATCHLIST to match your TradingView watchlist whenever
+// your watchlist changes (Pine cannot read your actual watchlist at
+// runtime, so this is a manually-maintained whitelist).
+//
+// Draws: MA line + trend read, swing zigzag + SW structure read
+// (Higher-High/Higher-Low vs Lower-High/Lower-Low), support (red)/
+// resistance (green) lines, Double Top/Bottom/Head & Shoulders/Inverse
+// H&S detection with neckline + measured-move target (blue), a buy
+// (green)/sell (red) zone box anchored on the signal candle, the current
+// candle's single-bar pattern name, and a volume-validity read — a
+// detected trader trap (thin-volume move) gets a white-on-red callout
+// instead of plain text. Every line/box uses 60% transparency; every
+// label uses the same small font.
+// ============================================================================
+indicator("IDX Analyzer [IZA]", shorttitle="IDXA", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=50, max_bars_back=2000)
+
+// ============================================================================
+// WATCHLIST GATE
+// This indicator only draws anything when the chart's ticker is in this
+// list. Edit WATCHLIST to match your TradingView watchlist — applying it to
+// any other symbol shows a single quiet notice and nothing else.
+// ============================================================================
+var string[] WATCHLIST = array.from(
+     "BBCA", "BMRI", "BBRI", "TPIA", "TLKM", "AMMN", "PTRO", "BREN",
+     "ANTM", "ADRO", "DSSA", "BRPT", "ICBP", "INDF", "AALI", "PANI",
+     "UNVR", "UNTR", "ASII", "BBNI", "BRIS", "MDKA", "TINS", "ISAT")
+inWatchlist = array.includes(WATCHLIST, syminfo.ticker)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+maLen          = input.int(20, "MA Length", group = "Trend (MA)")
+leftBars       = input.int(3, "Swing Left Bars", group = "Swing (SW) / Pattern")
+rightBarsIn    = input.int(3, "Swing Right Bars", group = "Swing (SW) / Pattern")
+srLookback     = input.int(20, "Support/Resistance Lookback", group = "Levels")
+trendLookback  = input.int(20, "Trend-Gate Lookback (bars before pivot)", group = "Swing (SW) / Pattern")
+trendGatePct   = input.float(2.0, "Min Prior Trend % for a Pattern", group = "Swing (SW) / Pattern") / 100
+minDepthPct    = input.float(1.5, "Min Neckline Depth %", group = "Swing (SW) / Pattern") / 100
+closeEnoughPct = input.float(3.5, "Max Top/Bottom Diff %", group = "Swing (SW) / Pattern") / 100
+minSeparation  = input.int(4, "Min Bars Between Key Pivots", group = "Swing (SW) / Pattern")
+volAvgLen      = input.int(20, "Volume Average Length", group = "Volume")
+maxPivots      = input.int(30, "Max Stored Pivots", group = "Swing (SW) / Pattern")
+
+// Every line/box drawn by this script uses the same 60% transparency, per
+// spec, and every label uses the same small font size.
+NOTE_SIZE = size.small
+T60 = 60
+
+// ============================================================================
+// MOVING AVERAGE (MA) — trend read
+// ============================================================================
+maVal = ta.sma(close, maLen)
+maRising = maVal > maVal[5]
+maBias = close > maVal and maRising ? 1 : (close < maVal and not maRising ? -1 : 0)
+maLineColor = color.new(#d97706, T60)
+plot(inWatchlist ? maVal : na, title = "MA", color = maLineColor, linewidth = 2)
+
+// ============================================================================
+// SUPPORT / RESISTANCE — support = red, resistance = green, both 60%
+// ============================================================================
+supportVal    = ta.lowest(low, srLookback)
+resistanceVal = ta.highest(high, srLookback)
+
+// ============================================================================
+// SWING PIVOTS (SW) — pivot highs/lows, each carrying its own trend-gate
+// reference (price change over `trendLookback` bars leading into it) so a
+// chart pattern can later confirm it actually reverses a real trend.
+// ============================================================================
+type Pivot
+    int idx
+    float price
+    int barTime
+    float vol
+    float trendPct
+
+var Pivot[] pivotHighs = array.new<Pivot>()
+var Pivot[] pivotLows  = array.new<Pivot>()
+
+ph = ta.pivothigh(leftBars, rightBarsIn)
+pl = ta.pivotlow(leftBars, rightBarsIn)
+
+if not na(ph)
+    refC = close[rightBarsIn + trendLookback]
+    pivC = close[rightBarsIn]
+    tPct = refC != 0 ? (pivC - refC) / refC : 0.0
+    array.push(pivotHighs, Pivot.new(bar_index - rightBarsIn, ph, time[rightBarsIn], volume[rightBarsIn], tPct))
+    if array.size(pivotHighs) > maxPivots
+        array.shift(pivotHighs)
+
+if not na(pl)
+    refC2 = close[rightBarsIn + trendLookback]
+    pivC2 = close[rightBarsIn]
+    tPct2 = refC2 != 0 ? (pivC2 - refC2) / refC2 : 0.0
+    array.push(pivotLows, Pivot.new(bar_index - rightBarsIn, pl, time[rightBarsIn], volume[rightBarsIn], tPct2))
+    if array.size(pivotLows) > maxPivots
+        array.shift(pivotLows)
+
+// ── SW structure trend: Higher-High/Higher-Low vs Lower-High/Lower-Low ────
+f_swTrend() =>
+    string swText = "SW: struktur belum cukup data"
+    int bias = 0
+    if array.size(pivotHighs) >= 2 and array.size(pivotLows) >= 2
+        h1 = array.get(pivotHighs, array.size(pivotHighs) - 2)
+        h2 = array.get(pivotHighs, array.size(pivotHighs) - 1)
+        l1 = array.get(pivotLows, array.size(pivotLows) - 2)
+        l2 = array.get(pivotLows, array.size(pivotLows) - 1)
+        higherHigh = h2.price > h1.price
+        higherLow  = l2.price > l1.price
+        if higherHigh and higherLow
+            bias := 1
+            swText := "SW: Higher-High & Higher-Low (struktur bullish)"
+        else if not higherHigh and not higherLow
+            bias := -1
+            swText := "SW: Lower-High & Lower-Low (struktur bearish)"
+        else
+            swText := "SW: struktur campuran/sideways"
+    [bias, swText]
+
+// ============================================================================
+// CHART PATTERN DETECTION — Double Top / Double Bottom / Head & Shoulders /
+// Inverse Head & Shoulders, selected by GLOBAL price significance (not just
+// the most recent pivots), gated on a real prior trend, requiring a minimum
+// neckline depth, and invalidated once price has already reached the
+// pattern's own measured-move target (stale = already played out).
+// ============================================================================
+f_closeEnough(a, b) =>
+    math.abs(a - b) / math.min(a, b) <= closeEnoughPct
+
+f_top2ByPrice(Pivot[] arr) =>
+    int pos1 = -1
+    int pos2 = -1
+    float best1 = -1e10
+    float best2 = -1e10
+    for i = 0 to array.size(arr) - 1
+        p = array.get(arr, i)
+        if p.price > best1
+            best2 := best1
+            pos2 := pos1
+            best1 := p.price
+            pos1 := i
+        else if p.price > best2
+            best2 := p.price
+            pos2 := i
+    [pos1, pos2]
+
+f_bottom2ByPrice(Pivot[] arr) =>
+    int pos1 = -1
+    int pos2 = -1
+    float best1 = 1e10
+    float best2 = 1e10
+    for i = 0 to array.size(arr) - 1
+        p = array.get(arr, i)
+        if p.price < best1
+            best2 := best1
+            pos2 := pos1
+            best1 := p.price
+            pos1 := i
+        else if p.price < best2
+            best2 := p.price
+            pos2 := i
+    [pos1, pos2]
+
+f_highestPos(Pivot[] arr) =>
+    int bestPos = -1
+    float bestPrice = -1e10
+    for i = 0 to array.size(arr) - 1
+        p = array.get(arr, i)
+        if p.price > bestPrice
+            bestPrice := p.price
+            bestPos := i
+    bestPos
+
+f_lowestPos(Pivot[] arr) =>
+    int bestPos = -1
+    float bestPrice = 1e10
+    for i = 0 to array.size(arr) - 1
+        p = array.get(arr, i)
+        if p.price < bestPrice
+            bestPrice := p.price
+            bestPos := i
+    bestPos
+
+// Deepest low / highest high among lows or highs whose idx is strictly
+// between `fromIdx` and `toIdx` — used to build a pattern's neckline.
+f_deepestLowBetween(int fromIdx, int toIdx) =>
+    float best = na
+    for i = 0 to array.size(pivotLows) - 1
+        p = array.get(pivotLows, i)
+        if p.idx > fromIdx and p.idx < toIdx
+            if na(best) or p.price < best
+                best := p.price
+    best
+
+f_highestHighBetween(int fromIdx, int toIdx) =>
+    float best = na
+    for i = 0 to array.size(pivotHighs) - 1
+        p = array.get(pivotHighs, i)
+        if p.idx > fromIdx and p.idx < toIdx
+            if na(best) or p.price > best
+                best := p.price
+    best
+
+// Returns: [found, type(0=none,1=DT,2=DB,3=HS,4=IHS), bias(1=bull,-1=bear),
+//           neckline, p1idx,p1price, p2idx,p2price, p3idx,p3price (p3 only for HS/IHS),
+//           volumeConfirmed]
+f_detectPattern() =>
+    bool found = false
+    int pType = 0
+    int bias = 0
+    float neckline = na
+    int p1i = na
+    float p1p = na
+    int p2i = na
+    float p2p = na
+    int p3i = na
+    float p3p = na
+    bool volOk = false
+
+    // Head & Shoulders (bearish)
+    if not found and array.size(pivotHighs) >= 3
+        headPos = f_highestPos(pivotHighs)
+        if headPos > 0 and headPos < array.size(pivotHighs) - 1
+            head = array.get(pivotHighs, headPos)
+            before = array.get(pivotHighs, headPos - 1)
+            after  = array.get(pivotHighs, headPos + 1)
+            if head.idx - before.idx >= minSeparation and after.idx - head.idx >= minSeparation
+                neck1 = f_deepestLowBetween(before.idx, head.idx)
+                neck2 = f_deepestLowBetween(head.idx, after.idx)
+                if not na(neck1) and not na(neck2)
+                    avgNeck = (neck1 + neck2) / 2
+                    headDepth = (head.price - avgNeck) / avgNeck
+                    target = avgNeck - math.abs(head.price - avgNeck)
+                    stale = close <= target
+                    if head.price > before.price * 1.02 and head.price > after.price * 1.02 and f_closeEnough(before.price, after.price) and f_closeEnough(neck1, neck2) and headDepth >= minDepthPct and close <= head.price * 1.01 and before.trendPct >= trendGatePct and not stale
+                        found := true
+                        pType := 3
+                        bias := -1
+                        neckline := avgNeck
+                        p1i := before.idx
+                        p1p := before.price
+                        p2i := head.idx
+                        p2p := head.price
+                        p3i := after.idx
+                        p3p := after.price
+                        volOk := after.vol <= before.vol
+
+    // Inverse Head & Shoulders (bullish)
+    if not found and array.size(pivotLows) >= 3
+        headPos = f_lowestPos(pivotLows)
+        if headPos > 0 and headPos < array.size(pivotLows) - 1
+            head = array.get(pivotLows, headPos)
+            before = array.get(pivotLows, headPos - 1)
+            after  = array.get(pivotLows, headPos + 1)
+            if head.idx - before.idx >= minSeparation and after.idx - head.idx >= minSeparation
+                neck1 = f_highestHighBetween(before.idx, head.idx)
+                neck2 = f_highestHighBetween(head.idx, after.idx)
+                if not na(neck1) and not na(neck2)
+                    avgNeck = (neck1 + neck2) / 2
+                    headDepth = (avgNeck - head.price) / avgNeck
+                    target = avgNeck + math.abs(avgNeck - head.price)
+                    stale = close >= target
+                    if head.price < before.price * 0.98 and head.price < after.price * 0.98 and f_closeEnough(before.price, after.price) and f_closeEnough(neck1, neck2) and headDepth >= minDepthPct and close >= head.price * 0.99 and before.trendPct <= -trendGatePct and not stale
+                        found := true
+                        pType := 4
+                        bias := 1
+                        neckline := avgNeck
+                        p1i := before.idx
+                        p1p := before.price
+                        p2i := head.idx
+                        p2p := head.price
+                        p3i := after.idx
+                        p3p := after.price
+                        volOk := after.vol >= before.vol
+
+    // Double Top (bearish)
+    if not found and array.size(pivotHighs) >= 2
+        [pos1, pos2] = f_top2ByPrice(pivotHighs)
+        if pos1 >= 0 and pos2 >= 0
+            a = array.get(pivotHighs, math.min(pos1, pos2))
+            b = array.get(pivotHighs, math.max(pos1, pos2))
+            if b.idx - a.idx >= minSeparation
+                neck = f_deepestLowBetween(a.idx, b.idx)
+                if not na(neck)
+                    avgTop = (a.price + b.price) / 2
+                    depth = (avgTop - neck) / avgTop
+                    target = neck - math.abs(math.max(a.price, b.price) - neck)
+                    stale = close <= target
+                    if f_closeEnough(a.price, b.price) and depth >= minDepthPct and close <= math.max(a.price, b.price) * 1.01 and a.trendPct >= trendGatePct and not stale
+                        found := true
+                        pType := 1
+                        bias := -1
+                        neckline := neck
+                        p1i := a.idx
+                        p1p := a.price
+                        p2i := b.idx
+                        p2p := b.price
+                        volOk := b.vol <= a.vol
+
+    // Double Bottom (bullish)
+    if not found and array.size(pivotLows) >= 2
+        [pos1, pos2] = f_bottom2ByPrice(pivotLows)
+        if pos1 >= 0 and pos2 >= 0
+            a = array.get(pivotLows, math.min(pos1, pos2))
+            b = array.get(pivotLows, math.max(pos1, pos2))
+            if b.idx - a.idx >= minSeparation
+                neck = f_highestHighBetween(a.idx, b.idx)
+                if not na(neck)
+                    avgBot = (a.price + b.price) / 2
+                    depth = (neck - avgBot) / avgBot
+                    target = neck + math.abs(neck - math.min(a.price, b.price))
+                    stale = close >= target
+                    if f_closeEnough(a.price, b.price) and depth >= minDepthPct and close >= math.min(a.price, b.price) * 0.99 and a.trendPct <= -trendGatePct and not stale
+                        found := true
+                        pType := 2
+                        bias := 1
+                        neckline := neck
+                        p1i := a.idx
+                        p1p := a.price
+                        p2i := b.idx
+                        p2p := b.price
+                        volOk := b.vol >= a.vol
+
+    [found, pType, bias, neckline, p1i, p1p, p2i, p2p, p3i, p3p, volOk]
+
+// ============================================================================
+// VOLUME — Akumulasi/Distribusi/Netral read, and a validity read: is this
+// move backed by real participation, or does it look like a thin-volume
+// anomaly / trader trap?
+// ============================================================================
+avgVol = ta.sma(volume, volAvgLen)
+volRatio = avgVol != 0 ? volume / avgVol : 1.0
+priceUp = close >= open
+volBiasLabel = volRatio >= 1.4 ? (priceUp ? "Akumulasi" : "Distribusi") : (volRatio <= 0.6 ? "Netral (volume mengering)" : "Netral")
+
+// ============================================================================
+// SINGLE-CANDLE PATTERN — same reference set as a professional trader would
+// read on the current bar (Marubozu, Engulfing, Hammer/Shooting Star, Doji,
+// Spinning Top, Piercing/Dark Cloud).
+// ============================================================================
+f_candlePattern() =>
+    rng = (high - low) == 0 ? 1e-9 : (high - low)
+    body = math.abs(close - open)
+    bodyPct = body / rng
+    upperWick = high - math.max(open, close)
+    lowerWick = math.min(open, close) - low
+    bull = close > open
+    string name = na
+    int bias = 0
+
+    prevBull = close[1] > open[1]
+    engulfsUp = not prevBull and bull and open <= close[1] and close >= open[1]
+    engulfsDown = prevBull and not bull and open >= close[1] and close <= open[1]
+    midPrev = (open[1] + close[1]) / 2
+
+    if engulfsUp
+        name := "Bullish Engulfing"
+        bias := 1
+    else if engulfsDown
+        name := "Bearish Engulfing"
+        bias := -1
+    else if not prevBull and bull and open < low[1] and close > midPrev and close < open[1]
+        name := "Piercing Line"
+        bias := 1
+    else if prevBull and not bull and open > high[1] and close < midPrev and close > open[1]
+        name := "Dark Cloud Cover"
+        bias := -1
+    else if bodyPct < 0.08
+        name := "Doji"
+        bias := 0
+    else if bodyPct > 0.7 and upperWick / rng < 0.12 and lowerWick / rng < 0.12
+        name := bull ? "Bullish Marubozu" : "Bearish Marubozu"
+        bias := bull ? 1 : -1
+    else if lowerWick > 2 * body and upperWick < body and bodyPct < 0.4
+        name := "Hammer/Hanging Man"
+        bias := bull ? 1 : 0
+    else if upperWick > 2 * body and lowerWick < body and bodyPct < 0.4
+        name := "Shooting Star/Inv.Hammer"
+        bias := bull ? 0 : -1
+    else if bodyPct >= 0.08 and bodyPct < 0.35
+        name := "Spinning Top"
+        bias := 0
+    else
+        name := bull ? "Bullish" : "Bearish"
+        bias := bull ? 1 : -1
+    [name, bias]
+
+// ============================================================================
+// DRAWING — everything below only runs for a watchlisted symbol, only
+// redraws on the last (live) bar, and clears its own previous drawings
+// first so the chart always reflects the CURRENT price/pattern/volume.
+// ============================================================================
+var line   srSupportLn = na
+var line   srResistLn  = na
+var line   targetLn    = na
+var label  targetLbl   = na
+var box    entryZoneBx = na
+var label  patternLbl  = na
+var label  entryLbl    = na
+var label  validityLbl = na
+var label  maLbl       = na
+var label  swLbl       = na
+var label  gateLbl     = na
+var line[] zigzagLns   = array.new<line>()
+var line[] patternLns  = array.new<line>()
+var label[] pivotLbls  = array.new<label>()
+
+f_clearAll() =>
+    line.delete(srSupportLn)
+    line.delete(srResistLn)
+    line.delete(targetLn)
+    label.delete(targetLbl)
+    box.delete(entryZoneBx)
+    label.delete(patternLbl)
+    label.delete(entryLbl)
+    label.delete(validityLbl)
+    label.delete(maLbl)
+    label.delete(swLbl)
+    label.delete(gateLbl)
+    for ln in zigzagLns
+        line.delete(ln)
+    array.clear(zigzagLns)
+    for ln in patternLns
+        line.delete(ln)
+    array.clear(patternLns)
+    for lb in pivotLbls
+        label.delete(lb)
+    array.clear(pivotLbls)
+
+if barstate.islast
+    f_clearAll()
+    if not inWatchlist
+        gateLbl := label.new(bar_index, high, "⚠ " + syminfo.ticker + " tidak ada di watchlist — indikator ini hanya untuk saham watchlist.", style = label.style_label_down, color = color.new(color.gray, 40), textcolor = color.white, size = NOTE_SIZE)
+    else
+        // ── Full swing zigzag: every stored pivot high/low, oldest to newest ──
+        int ia = 0
+        int ib = 0
+        int prevIdx = na
+        float prevPrice = na
+        while ia < array.size(pivotHighs) or ib < array.size(pivotLows)
+            Pivot p = na
+            if ia >= array.size(pivotHighs)
+                p := array.get(pivotLows, ib)
+                ib += 1
+            else if ib >= array.size(pivotLows)
+                p := array.get(pivotHighs, ia)
+                ia += 1
+            else
+                ph2 = array.get(pivotHighs, ia)
+                pl2 = array.get(pivotLows, ib)
+                if ph2.idx <= pl2.idx
+                    p := ph2
+                    ia += 1
+                else
+                    p := pl2
+                    ib += 1
+            if not na(prevIdx)
+                zzLn = line.new(prevIdx, prevPrice, p.idx, p.price, xloc.bar_index, extend.none, color.new(color.gray, T60), line.style_solid, 1)
+                array.push(zigzagLns, zzLn)
+            prevIdx := p.idx
+            prevPrice := p.price
+
+        // ── Support / Resistance ──
+        srSupportLn := line.new(bar_index - srLookback, supportVal, bar_index + 20, supportVal, xloc.bar_index, extend.none, color.new(color.red, T60), line.style_dashed, 2)
+        srResistLn  := line.new(bar_index - srLookback, resistanceVal, bar_index + 20, resistanceVal, xloc.bar_index, extend.none, color.new(color.green, T60), line.style_dashed, 2)
+
+        // ── Chart pattern ──
+        [found, pType, pBias, neckline, p1i, p1p, p2i, p2p, p3i, p3p, volOk] = f_detectPattern()
+
+        // ── Entry zone + target (neckline-anchored when a pattern exists) ──
+        string entryType = "WAIT"
+        float entryLow = na
+        float entryHigh = na
+        float target = na
+        int signalIdx = bar_index
+
+        if found
+            signalIdx := pType == 3 or pType == 4 ? p3i : p2i
+            if pBias == 1
+                entryLow := neckline * 0.995
+                entryHigh := neckline * 1.02
+                entryType := "BUY"
+                float extreme = pType == 4 ? p2p : math.min(p1p, p2p)
+                target := neckline + math.abs(extreme - neckline)
+            else
+                entryHigh := neckline * 1.005
+                entryLow := neckline * 0.98
+                entryType := "SELL"
+                float extreme2 = pType == 3 ? p2p : math.max(p1p, p2p)
+                target := neckline - math.abs(extreme2 - neckline)
+        else
+            [candleName, candleBias] = f_candlePattern()
+            if candleBias == 1
+                entryLow := supportVal
+                entryHigh := supportVal + (close - supportVal) * 0.35
+                entryType := "BUY"
+                target := resistanceVal + (resistanceVal - supportVal)
+            else if candleBias == -1
+                entryHigh := resistanceVal
+                entryLow := resistanceVal - (resistanceVal - close) * 0.35
+                entryType := "SELL"
+                target := supportVal - (resistanceVal - supportVal)
+
+        // ── Pattern lines/labels ──
+        if found
+            patternColor = pBias == 1 ? color.new(color.purple, T60) : color.new(color.orange, T60)
+            textColor = pBias == 1 ? color.new(color.green, T60) : color.new(color.red, T60)
+            if pType == 3 or pType == 4
+                ln1 = line.new(p1i, p1p, p2i, p2p, xloc.bar_index, extend.none, patternColor, line.style_solid, 2)
+                ln2 = line.new(p2i, p2p, p3i, p3p, xloc.bar_index, extend.none, patternColor, line.style_solid, 2)
+                array.push(patternLns, ln1)
+                array.push(patternLns, ln2)
+                array.push(pivotLbls, label.new(p1i, p1p, "P1 " + str.tostring(math.round(p1p)), style = label.style_none, textcolor = textColor, size = NOTE_SIZE))
+                array.push(pivotLbls, label.new(p2i, p2p, (pType == 3 ? "Head " : "Head ") + str.tostring(math.round(p2p)), style = label.style_none, textcolor = textColor, size = NOTE_SIZE))
+                array.push(pivotLbls, label.new(p3i, p3p, "P3 " + str.tostring(math.round(p3p)), style = label.style_none, textcolor = textColor, size = NOTE_SIZE))
+            else
+                ln1 = line.new(p1i, p1p, p2i, p2p, xloc.bar_index, extend.none, patternColor, line.style_solid, 2)
+                array.push(patternLns, ln1)
+                array.push(pivotLbls, label.new(p1i, p1p, "P1 " + str.tostring(math.round(p1p)), style = label.style_none, textcolor = textColor, size = NOTE_SIZE))
+                array.push(pivotLbls, label.new(p2i, p2p, "P2 " + str.tostring(math.round(p2p)), style = label.style_none, textcolor = textColor, size = NOTE_SIZE))
+            neckLn = line.new(signalIdx, neckline, bar_index + 20, neckline, xloc.bar_index, extend.none, patternColor, line.style_dashed, 1)
+            array.push(patternLns, neckLn)
+            string pName = pType == 1 ? "DOUBLE TOP" : pType == 2 ? "DOUBLE BOTTOM" : pType == 3 ? "HEAD & SHOULDERS" : "INVERSE HEAD & SHOULDERS"
+            confirmSuffix = volOk ? " [vol. confirmed]" : " [need confirmation]"
+            patternLbl := label.new(signalIdx, neckline, pName + " — Neckline " + str.tostring(math.round(neckline)) + confirmSuffix, style = label.style_none, textcolor = textColor, size = NOTE_SIZE)
+
+        // ── Target line ──
+        if not na(target)
+            targetColor = color.new(color.blue, T60)
+            targetLn := line.new(bar_index, target, bar_index + 20, target, xloc.bar_index, extend.none, targetColor, line.style_solid, 2)
+            targetLbl := label.new(bar_index + 3, target, "TARGET " + str.tostring(math.round(target)), style = label.style_none, textcolor = targetColor, size = NOTE_SIZE)
+
+        // ── Buy/Sell zone (green = buy, red = sell, both 60%) ──
+        if entryType == "BUY"
+            entryZoneBx := box.new(signalIdx - 2, entryHigh, signalIdx + 4, entryLow, border_color = color.new(color.green, T60), bgcolor = color.new(color.green, T60))
+        else if entryType == "SELL"
+            entryZoneBx := box.new(signalIdx - 2, entryHigh, signalIdx + 4, entryLow, border_color = color.new(color.red, T60), bgcolor = color.new(color.red, T60))
+
+        // ── Current-candle single-bar pattern label ──
+        [candleName2, candleBias2] = f_candlePattern()
+        candleColor = candleBias2 == 1 ? color.new(color.green, T60) : candleBias2 == -1 ? color.new(color.red, T60) : color.new(#8a6d1f, T60)
+        pad = (resistanceVal - supportVal) * 0.05
+        patternAnchor = candleBias2 == -1 ? low - pad : high + pad
+        label.new(bar_index, patternAnchor, candleName2, style = label.style_none, textcolor = candleColor, size = NOTE_SIZE)
+
+        // ── Entry marker on the signal candle ──
+        entryColor = entryType == "BUY" ? color.new(color.green, T60) : entryType == "SELL" ? color.new(color.red, T60) : color.new(#8a6d1f, T60)
+        targetSuffix = not na(target) ? " (target " + str.tostring(math.round(target)) + ")" : ""
+        entryText = entryType == "BUY" ? "● ENTRY BUY ▲ " + str.tostring(math.round(entryLow)) + "-" + str.tostring(math.round(entryHigh)) + targetSuffix : entryType == "SELL" ? "● ENTRY SELL ▼ " + str.tostring(math.round(entryLow)) + "-" + str.tostring(math.round(entryHigh)) + targetSuffix : "● NETRAL — TUNGGU"
+        entryPad = pad != 0 ? pad : close * 0.01
+        entryAnchor = entryType == "SELL" ? high[bar_index - signalIdx] + entryPad : low[bar_index - signalIdx] - entryPad
+        entryLbl := label.new(signalIdx, entryAnchor, entryText, style = label.style_none, textcolor = entryColor, size = NOTE_SIZE)
+
+        // ── Volume validity (white-on-red 60% when a trap is detected) ──
+        validityAnchor = entryType == "SELL" ? entryAnchor + entryPad * 1.2 : entryAnchor - entryPad * 1.2
+        if entryType == "WAIT"
+            validityLbl := label.new(signalIdx, validityAnchor, "Volume: netral, belum ada sinyal untuk divalidasi", style = label.style_none, textcolor = color.new(#8a6d1f, T60), size = NOTE_SIZE)
+        else if volRatio <= 0.6
+            validityLbl := label.new(signalIdx, validityAnchor, "⚠ WASPADA — volume tipis, rawan jebakan (trap)", style = label.style_label_left, color = color.new(color.red, T60), textcolor = color.white, size = NOTE_SIZE)
+        else if volRatio >= 1.4
+            validityLbl := label.new(signalIdx, validityAnchor, "✓ VALID — didukung volume tinggi, bukan anomali", style = label.style_none, textcolor = color.new(color.green, T60), size = NOTE_SIZE)
+        else
+            validityLbl := label.new(signalIdx, validityAnchor, "~ Volume rata-rata — konfirmasi belum kuat", style = label.style_none, textcolor = color.new(#8a6d1f, T60), size = NOTE_SIZE)
+
+        // ── MA trend notation ──
+        maBiasStr = maBias == 1 ? "bullish" : maBias == -1 ? "bearish" : "neutral"
+        maText = "MA" + str.tostring(maLen) + ": " + (maBias == 1 ? "Uptrend (harga > MA, MA naik)" : maBias == -1 ? "Downtrend (harga < MA, MA turun)" : "Sideways/Transisi")
+        maLbl := label.new(bar_index + 3, maVal, maText, style = label.style_none, textcolor = maBias == 1 ? color.new(color.green, T60) : maBias == -1 ? color.new(color.red, T60) : color.new(#8a6d1f, T60), size = NOTE_SIZE)
+
+        // ── SW structure notation ──
+        [swBias, swText] = f_swTrend()
+        if array.size(pivotHighs) > 0 or array.size(pivotLows) > 0
+            lastHighIdx = array.size(pivotHighs) > 0 ? array.get(pivotHighs, array.size(pivotHighs) - 1).idx : -1
+            lastLowIdx  = array.size(pivotLows) > 0 ? array.get(pivotLows, array.size(pivotLows) - 1).idx : -1
+            useHigh = lastHighIdx > lastLowIdx
+            swIdx = useHigh ? lastHighIdx : lastLowIdx
+            swPrice = useHigh ? array.get(pivotHighs, array.size(pivotHighs) - 1).price : array.get(pivotLows, array.size(pivotLows) - 1).price
+            swLbl := label.new(swIdx, swPrice, swText, style = label.style_none, textcolor = swBias == 1 ? color.new(color.green, T60) : swBias == -1 ? color.new(color.red, T60) : color.new(#8a6d1f, T60), size = NOTE_SIZE)
