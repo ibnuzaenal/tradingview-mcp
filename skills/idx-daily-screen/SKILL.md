@@ -1,6 +1,6 @@
 ---
 name: idx-daily-screen
-description: Generate the IDX Daily Screen(er) PDF report (IHSG gauge, Top Gainer/Loser with volume-trap check, macro/sentiment panel, sector-categorized watchlist cards with Decision Gate 2.0/3.0) purely from CSV price data — no TradingView Desktop required, runnable from a phone/cloud session. Trigger phrases: "IDX Daily Screen", "jalankan IDX Daily Screening", "buat laporan screening IDX hari ini". Does NOT include emailing the report — that stays a separate, explicit step, on hold until it can run unattended/from a phone.
+description: Generate the IDX Daily Screen(er) PDF report (IHSG gauge, Top Gainer/Loser with volume-trap check, macro/sentiment panel, sector-categorized watchlist cards with Decision Gate 2.0/3.0) purely from CSV price data — no TradingView Desktop required, runnable from a phone/cloud session. Trigger phrases: "IDX Daily Screen", "jalankan IDX Daily Screening", "buat laporan screening IDX hari ini". Includes emailing the finished PDF to a confirmed recipient (see Step 7) whenever an email tool/connector is available in the session.
 ---
 
 # IDX Daily Screener — Report Generation (CSV-based, no TradingView Desktop)
@@ -240,10 +240,15 @@ without needing this specific Mac, TradingView Desktop, or the separate
 manual step left is Step 0's occasional `pine/`/`dg_engine/` re-sync when
 the user ships a new DG version from wherever they're iterating on it.
 
-## Not part of this skill
+## Step 7 — Email the finished PDF (enabled 2026-09-18)
 
-Emailing the finished PDF stays a separate, explicit step — it's on hold
-per the user's own instruction until it can be done unattended (from a
-phone, or fully automatically) rather than through the desktop-only Claude
-in Chrome extension flow. Don't attempt it as part of this pipeline; confirm
-recipient/subject with the user when they do ask for it.
+Emailing is now a standing step, confirmed by the user once recipient and
+subject were fixed — no longer "on hold": send the finished PDF (attached)
+to **ibnu.zaenal@gmail.com**, subject **`IDX Daily Screen - {tanggal}`**
+(e.g. `IDX Daily Screen - 18 September 2026`), via whichever email-sending
+tool/connector is available in the running session (a Gmail-style MCP
+connector, if connected). If no email tool is available in a given session,
+skip this step and say so plainly in the summary rather than failing the
+whole run — the PDF/Artifact delivery from Steps 5-6 already covers the
+user regardless. If the user ever names a different recipient or subject
+format for a specific run, that overrides these defaults for that run only.
