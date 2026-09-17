@@ -1,0 +1,399 @@
+//@version=6
+// =============================================================================
+// EWS Detector V1.0  (shorttitle: EWSD_V1.0)
+// =============================================================================
+// Early Warning System detector for single-symbol bullish/bearish reversal
+// risk, built directly from the independent EWS research done on 88 IDX
+// stocks / 10y daily data (Bagian 1) and the FOMO/Herding/Panic psychology
+// extension (Bagian 2).
+//
+// DESIGN NOTE — what this script IS and ISN'T:
+//   The original research used a cross-sectional ML classifier (Gradient
+//   Boosting + Logistic Regression, walk-forward validated) across 88 stocks
+//   simultaneously. That model cannot run inside Pine Script (no sklearn,
+//   no multi-symbol panel regression at scale). This script is therefore a
+//   RULE-BASED SCORECARD that encodes the same statistically-validated
+//   FEATURES and DIRECTIONS OF EFFECT found in that research, using small,
+//   fixed, hand-documented weights — NOT a literal port of the trained model.
+//
+//   Per the Bagian-2 ablation finding (adding all psychology features to the
+//   ML classifier did NOT reliably improve out-of-sample AUC, due to
+//   redundancy/overfitting), this script deliberately:
+//     1. Drives the PRIMARY Bullish-Risk / Bearish-Risk score from a LEAN,
+//        well-established feature set (RSI, MACD histogram, realized-vol
+//        percentile, price-vs-trend momentum, Bollinger %B, own-high
+//        proximity, own-stock "breadth" proxy).
+//     2. Adds Panic/FOMO/Herding-proxy with SMALL, fixed weights only where
+//        the event study found them independently significant (Panic index
+//        p=0.039 pre-bullish; FOMO index p=0.009 pre-bullish / p≈0.08
+//        pre-bearish) — this is a hand-specified scorecard, not an
+//        automatically-fit model, so it does not share the same overfitting
+//        failure mode identified in the ablation test.
+//     3. Surfaces Sentiment Composite / Velocity / FOMO / Panic / Herding-
+//        proxy in a separate DASHBOARD TABLE for human diagnostic use, per
+//        Bagian-2 Recommendation #1 ("use as diagnostic dashboard, not a
+//        mechanical classifier feature").
+//
+//   Constructs that need CROSS-SECTIONAL data across many stocks (the CSAD
+//   herding regression, the Bifurcation/Hindenburg-Omen index, true market
+//   breadth) have NO clean single-symbol equivalent and are NOT silently
+//   faked here:
+//     - Herding is approximated by rolling correlation of THIS stock to a
+//       benchmark index (a different, weaker proxy — disclosed, not hidden).
+//     - Bifurcation is OMITTED entirely (no single-stock analog attempted).
+//     - Market breadth is approximated by this stock's OWN up-day
+//       participation ratio over time (a time-series analog of the original
+//       cross-sectional breadth concept).
+//
+//   Bearish-Risk detection was found to be intrinsically harder than
+//   Bullish-Risk in the original research (out-of-sample AUC 0.559 vs 0.610,
+//   pooled). That gap is expected to persist (likely worsen) here since the
+//   single strongest bearish precursor found (cross-sectional breadth
+//   expansion, p=0.008) has only a weak single-stock proxy available.
+//   Treat Bearish-Risk signals with extra caution — see dashboard caveat.
+//
+// v1.0 (2026-09-11): initial release, built on IDX EWS research Bagian 1 & 2.
+// =============================================================================
+
+indicator(title = "EWS Detector V1.0", shorttitle = "EWSD_V1.0", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// -----------------------------------------------------------------------------
+// INPUTS
+// -----------------------------------------------------------------------------
+grpCore    = "EWS Core Settings"
+grpPsych   = "FOMO / Panic / Herding (Diagnostic)"
+grpRegime  = "Regime Filter"
+grpNote    = "Notation & Display"
+
+lenRSI          = input.int(14,  "RSI Length",                          group = grpCore)
+fastLen         = input.int(12,  "MACD Fast Length",                    group = grpCore)
+slowLen         = input.int(26,  "MACD Slow Length",                    group = grpCore)
+sigLen          = input.int(9,   "MACD Signal Length",                  group = grpCore)
+lenMA           = input.int(125, "Trend MA Length (momentum baseline)", group = grpCore)
+lenRV           = input.int(20,  "Realized Volatility Length",          group = grpCore)
+lenBB           = input.int(20,  "Bollinger Length",                    group = grpCore)
+bbMult          = input.float(2.0, "Bollinger Mult",                    group = grpCore)
+lenExtreme      = input.int(60,  "High/Low Extreme Lookback (bars)",    group = grpCore)
+lenPart         = input.int(20,  "Participation Ratio Lookback (breadth proxy)", group = grpCore)
+percentileWin   = input.int(504, "Percentile-Rank Window (~2y)",        group = grpCore)
+bullThreshold   = input.float(68, "Bullish-Risk Score Threshold (0-100)", minval = 50, maxval = 95, group = grpCore)
+bearThreshold   = input.float(68, "Bearish-Risk Score Threshold (0-100)", minval = 50, maxval = 95, group = grpCore)
+
+lenCurv         = input.int(20,  "Parabolic Curvature Window",          group = grpPsych)
+lenSkew         = input.int(20,  "Return Skew Window",                  group = grpPsych)
+lenChase        = input.int(60,  "Chasing-Correlation Window",          group = grpPsych)
+lenCorrSpike    = input.int(20,  "Correlation-to-Benchmark Window",     group = grpPsych)
+lenCorrBase     = input.int(120, "Correlation Baseline Window",         group = grpPsych)
+enableBenchmark = input.bool(true, "Enable Herding-Proxy / Benchmark Correlation", group = grpPsych)
+benchmarkSymbol = input.symbol("IDX:COMPOSITE", "Benchmark Index Symbol (verify on your feed)", group = grpPsych)
+showDashboard   = input.bool(true, "Show Diagnostic Dashboard",          group = grpPsych)
+
+lenADX          = input.int(14,  "ADX Length (trend/range regime)",     group = grpRegime)
+adxTrendLevel   = input.float(25, "ADX Level Above = Trending Regime",  group = grpRegime)
+
+// Callout background transparency + text color/transparency follow the
+// IDX Analyzer DG2.8 standard exactly: notationTransparency default = 78
+// (DG2.8's "Transparansi notasi" input default, ML1.2 note: raised from 55
+// to 78 so it reads as genuinely transparent), text always color.new(black,10)
+// hardcoded (DG2.8 never exposes a separate text-transparency input).
+notationTransparency = input.int(78, "Callout Background Transparency (0=solid, 100=invisible) — DG2.8 standard", minval = 0, maxval = 95, group = grpNote)
+showStemLine    = input.bool(true, "Show Vertical Guide-Line (dotted, auto-cut by next signal)", group = grpNote)
+stemHeightATR   = input.float(1.0, "Guide-Line Height (x ATR)",          group = grpNote)
+stemTransparency = input.int(55, "Guide-Line Transparency (grey, DG2.8 dotted-line standard)", minval = 0, maxval = 95, group = grpNote)
+
+// -----------------------------------------------------------------------------
+// BOLD UNICODE TEXT HELPER
+// Pine label.new has no native bold formatting — following this project's
+// established convention (see IDX Analyzer DG conventions: f_bold()), tiny
+// "bold" label text is achieved via Unicode Mathematical-Bold substitution.
+// -----------------------------------------------------------------------------
+var array<string> PLAIN_LETTERS = array.from("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")
+var array<string> BOLD_LETTERS  = array.from("𝐀", "𝐁", "𝐂", "𝐃", "𝐄", "𝐅", "𝐆", "𝐇", "𝐈", "𝐉", "𝐊", "𝐋", "𝐌", "𝐍", "𝐎", "𝐏", "𝐐", "𝐑", "𝐒", "𝐓", "𝐔", "𝐕", "𝐖", "𝐗", "𝐘", "𝐙")
+var array<string> PLAIN_LOWER   = array.from("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z")
+var array<string> BOLD_LOWER    = array.from("𝐚", "𝐛", "𝐜", "𝐝", "𝐞", "𝐟", "𝐠", "𝐡", "𝐢", "𝐣", "𝐤", "𝐥", "𝐦", "𝐧", "𝐨", "𝐩", "𝐪", "𝐫", "𝐬", "𝐭", "𝐮", "𝐯", "𝐰", "𝐱", "𝐲", "𝐳")
+var array<string> PLAIN_DIGITS  = array.from("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+var array<string> BOLD_DIGITS   = array.from("𝟎", "𝟏", "𝟐", "𝟑", "𝟒", "𝟓", "𝟔", "𝟕", "𝟖", "𝟗")
+
+// Sentence-case text ("Bullish", not "BULLISH") needs lowercase bold too,
+// so both case tables are checked here.
+f_bold(string txt) =>
+    string out = ""
+    for i = 0 to str.length(txt) - 1
+        string ch = str.substring(txt, i, i + 1)
+        int li = array.indexof(PLAIN_LETTERS, ch)
+        int lo = array.indexof(PLAIN_LOWER, ch)
+        int di = array.indexof(PLAIN_DIGITS, ch)
+        if li >= 0
+            out := out + array.get(BOLD_LETTERS, li)
+        else if lo >= 0
+            out := out + array.get(BOLD_LOWER, lo)
+        else if di >= 0
+            out := out + array.get(BOLD_DIGITS, di)
+        else
+            out := out + ch
+    out
+
+// -----------------------------------------------------------------------------
+// CORE INDICATORS (re-derived from raw OHLCV, same formulas as the EWS research)
+// -----------------------------------------------------------------------------
+logRet   = math.log(close / close[1])
+rsi14    = ta.rsi(close, lenRSI)
+[macdLine, signalLine, macdHist] = ta.macd(close, fastLen, slowLen, sigLen)
+
+trendMA  = ta.sma(close, lenMA)
+mktMom   = (close - trendMA) / trendMA
+
+rv       = ta.stdev(logRet, lenRV) * math.sqrt(252)
+rvRank   = ta.percentrank(rv, percentileWin)          // 0-100, own-history percentile
+
+bbBasis  = ta.sma(close, lenBB)
+bbDev    = bbMult * ta.stdev(close, lenBB)
+bbUpper  = bbBasis + bbDev
+bbLower  = bbBasis - bbDev
+bbPctB   = (close - bbLower) / (bbUpper - bbLower)
+
+hh60     = ta.highest(high, lenExtreme)
+ll60     = ta.lowest(low, lenExtreme)
+ddFromHigh   = close / hh60 - 1          // <= 0, near 0 = at/near own high
+upFromLow    = close / ll60 - 1          // >= 0, near 0 = at/near own low
+closeToHigh  = 1 - math.abs(ddFromHigh)  // higher = closer to own high
+
+// own-stock "breadth" proxy: fraction of up-closes over lenPart bars
+upDay          = close > close[1] ? 1.0 : 0.0
+participation  = ta.sma(upDay, lenPart)  // 0..1, analog of cross-sectional breadth_adv
+
+atr14 = ta.atr(14)
+
+// -----------------------------------------------------------------------------
+// FOMO INGREDIENTS
+// -----------------------------------------------------------------------------
+mom5        = math.log(close) - math.log(close[5])
+priceAccel  = mom5 - mom5[5]
+
+volMA20 = ta.sma(volume, 20)
+volSD20 = ta.stdev(volume, 20)
+volZ    = volSD20 != 0 ? (volume - volMA20) / volSD20 : 0.0
+volAccel = volZ - volZ[5]
+
+// Parabolic curvature: discrete second-derivative proxy (recent half-window
+// momentum minus prior half-window momentum). NOT a true quadratic-fit
+// coefficient (Pine has no built-in polynomial regression) — disclosed
+// simplification, documented per project convention.
+halfCurv     = math.max(2, math.floor(lenCurv / 2))  // math.floor forces int type (index into close[] requires int, not float)
+momRecent    = math.log(close) - math.log(close[halfCurv])
+momPrior     = math.log(close[halfCurv]) - math.log(close[lenCurv])
+parabolicCurv = momRecent - momPrior
+
+breadthHighExpansion = participation - participation[10]   // rising own-participation = FOMO breadth proxy
+
+chasingCorr = ta.correlation(logRet[1], volZ, lenChase)     // buying MORE after an up day = chasing
+
+// -----------------------------------------------------------------------------
+// PANIC INGREDIENTS
+// -----------------------------------------------------------------------------
+downVolContribution = close < close[1] ? volZ : 0.0
+downVolShock = ta.sma(downVolContribution, 5)
+
+// rolling time-series skew of THIS stock's returns (single-stock analog of
+// the original cross-sectional skew across many stocks on the same day)
+f_skew(series float src, int n) =>
+    float m  = ta.sma(src, n)
+    float sd = ta.stdev(src, n)
+    float sumCube = 0.0
+    for i = 0 to n - 1
+        sumCube += math.pow(src[i] - m, 3)
+    sd != 0 ? (sumCube / n) / math.pow(sd, 3) : 0.0
+
+retSkew = f_skew(logRet, lenSkew)
+
+breadthCollapseRate = -(participation - participation[10])
+
+// -----------------------------------------------------------------------------
+// BENCHMARK CORRELATION (herding-proxy + correlation spike / contagion proxy)
+// request.security with explicit lookahead_off on the SAME timeframe as the
+// chart — no repaint risk (no unshifted higher-timeframe field is used).
+// -----------------------------------------------------------------------------
+benchClose = enableBenchmark ? request.security(benchmarkSymbol, timeframe.period, close, lookahead = barmerge.lookahead_off) : na
+benchRet   = math.log(benchClose / benchClose[1])
+
+corrToBench   = enableBenchmark ? ta.correlation(logRet, benchRet, lenCorrSpike) : na
+corrBaseline  = enableBenchmark ? ta.sma(corrToBench, lenCorrBase) : na
+corrSpike     = enableBenchmark ? corrToBench - corrBaseline : na
+herdingProxy  = corrToBench   // display as-is: high correlation to benchmark = moving in lockstep = herding-with-market proxy
+
+// -----------------------------------------------------------------------------
+// PERCENTILE-RANK HELPERS (non-parametric, matches the EWS research's F&G
+// methodology — robust to outliers/fat tails, no normality assumption)
+// -----------------------------------------------------------------------------
+f_rank(series float src) => nz(ta.percentrank(src, percentileWin), 50.0)
+f_rankInv(series float src) => 100.0 - f_rank(src)
+
+// -----------------------------------------------------------------------------
+// SENTIMENT COMPOSITE (single-stock Fear & Greed analog) + trend
+// -----------------------------------------------------------------------------
+c_momentum   = f_rank(mktMom)
+c_volatility = 100.0 - f_rank(rv)              // low vol = greed
+c_breadth    = f_rank(participation)
+c_volume     = f_rank(volZ)
+c_extremes   = f_rank(closeToHigh)
+
+sentimentComposite = (c_momentum + c_volatility + c_breadth + c_volume + c_extremes) / 5.0
+sentVelocity5  = sentimentComposite - sentimentComposite[5]
+sentAccel5     = sentVelocity5 - sentVelocity5[5]
+
+// -----------------------------------------------------------------------------
+// FOMO INDEX & PANIC/CAPITULATION INDEX (0-100 composites, same
+// percentile-rank methodology, diagnostic dashboard use)
+// -----------------------------------------------------------------------------
+fomoIndex = (f_rank(priceAccel) + f_rank(volAccel) + f_rank(parabolicCurv) +
+             f_rank(breadthHighExpansion) + f_rank(nz(chasingCorr, 0.0))) / 5.0
+
+panicIndex = (f_rank(downVolShock) + f_rank(nz(corrSpike, 0.0)) + f_rank(-retSkew) +
+              f_rank(breadthCollapseRate)) / 4.0
+
+// -----------------------------------------------------------------------------
+// REGIME FILTER (ADX) — context only, per Bagian-2 Recommendation #5:
+// F&G-style extremes behave differently in trending vs ranging regimes.
+// Displayed on the dashboard; does not gate the primary score (keeps the
+// core detector matching the validated event-study mechanism directly).
+// -----------------------------------------------------------------------------
+[diPlus, diMinus, adxVal] = ta.dmi(lenADX, lenADX)
+isTrending = adxVal >= adxTrendLevel
+
+// -----------------------------------------------------------------------------
+// PRIMARY EWS SCORES — lean, hand-weighted scorecard (see header note)
+// -----------------------------------------------------------------------------
+// Bullish-Risk: encodes the "oversold / capitulation before sync rebound"
+// pattern found in the event study (low RSI, low momentum, negative MACD
+// histogram, elevated realized vol, elevated Panic Index — all significant
+// at t-1, p<0.05, ahead of bullish sync events).
+bullScore = 0.25 * f_rankInv(rsi14) +
+           0.20 * f_rankInv(mktMom) +
+           0.15 * f_rank(rv) +
+           0.15 * f_rankInv(macdHist) +
+           0.15 * panicIndex +
+           0.10 * f_rankInv(bbPctB)
+
+// Bearish-Risk: encodes the "broadening participation / euphoria before sync
+// reversal" pattern (rising own-participation, rising RSI/momentum, close to
+// own high, elevated FOMO Index). Weaker/more experimental than Bullish-Risk
+// — the strongest original precursor (cross-sectional breadth, p=0.008) only
+// has a partial single-stock analog here (own-history participation ratio).
+bearScore = 0.25 * f_rank(mktMom) +
+           0.20 * f_rank(participation) +
+           0.15 * f_rank(closeToHigh) +
+           0.15 * f_rank(rsi14) +
+           0.15 * fomoIndex +
+           0.10 * f_rank(nz(corrSpike, 0.0))
+
+// -----------------------------------------------------------------------------
+// SIGNAL STATE & EVENT-TRIGGERED NOTATION
+// Notation is placed only on the bar where the state CHANGES (i.e. exactly
+// when the detector activates a new signal), not on every bar — keeps the
+// chart legible while still marking the precise activation candle.
+// -----------------------------------------------------------------------------
+bullActive = bullScore >= bullThreshold and bullScore > bearScore
+bearActive = bearScore >= bearThreshold and bearScore > bullScore
+
+state = bullActive ? 1 : bearActive ? -1 : 0
+stateChanged = ta.change(state) != 0
+
+// Callout background/text: matches IDX Analyzer DG2.8's f_recColor /
+// f_warnColor / f_neutralColor pattern exactly — same base colors
+// (color.green / color.red / color.orange / color.gray) through
+// color.new(_, notationTransparency), and text hardcoded to
+// color.new(color.black, 10), same as every label.new in DG2.8.
+colBullBg   = color.new(color.green,  notationTransparency)
+colBearBg   = color.new(color.red,    notationTransparency)
+colNetralBg = color.new(color.orange, notationTransparency)
+colText     = color.new(color.black, 10)   // DG2.8 standard, not user-adjustable there either
+colStemGrey = color.new(color.gray, stemTransparency)
+
+// Vertical dotted guide-line: connects the triggering candle up to the
+// Callout box. Height = stemHeightATR x ATR (default 1x ATR). Pine's line
+// width is an INTEGER in pixels (minimum 1), so a literal 0.5 width is not
+// representable; width=1 is used as the thinnest option.
+// Auto-cut behavior: if a NEWER signal fires within 6 bars of this line's
+// origin bar, the PREVIOUS guide-line is shortened (line.set_y2) to stop
+// right where the new one begins, instead of visually overshooting into
+// the new Callout.
+var line stemLine = na
+var int  stemBar  = na
+
+// Callout model: label_down = box with a downward-pointing tail anchored
+// exactly on the triggering candle, sitting at the TOP of the guide-line.
+if stateChanged and not na(state) and barstate.isconfirmed
+    stemTop = high + stemHeightATR * atr14
+
+    if showStemLine
+        if not na(stemLine) and not na(stemBar) and (bar_index - stemBar) < 6
+            line.set_y2(stemLine, high)   // cut the previous guide-line off right here
+        stemLine := line.new(bar_index, high, bar_index, stemTop,
+                              style = line.style_dotted, width = 1, color = colStemGrey)
+        stemBar := bar_index
+
+    if state == 1
+        label.new(bar_index, stemTop, text = f_bold("Bullish"),
+                  style = label.style_label_down, yloc = yloc.price, color = colBullBg, textcolor = colText,
+                  size = size.tiny)
+    else if state == -1
+        label.new(bar_index, stemTop, text = f_bold("Bearish"),
+                  style = label.style_label_down, yloc = yloc.price, color = colBearBg, textcolor = colText,
+                  size = size.tiny)
+    else
+        label.new(bar_index, stemTop, text = f_bold("Netral"),
+                  style = label.style_label_down, yloc = yloc.price, color = colNetralBg, textcolor = colText,
+                  size = size.tiny)
+
+// -----------------------------------------------------------------------------
+// DIAGNOSTIC DASHBOARD (FOMO / Panic / Herding-proxy / Sentiment trend)
+// Per Bagian-2 Recommendation #1: kept SEPARATE from the primary score's
+// mechanical weighting, shown here for human interpretation only.
+// -----------------------------------------------------------------------------
+var table dash = table.new(position.top_right, 2, 11, border_width = 1)
+
+f_dashColor(float score) =>
+    score >= 70 ? color.new(color.red, 20) : score >= 55 ? color.new(color.orange, 20) : color.new(color.gray, 40)
+
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, f_bold("EWS DETECTOR V1.0"), bgcolor = color.new(color.navy, 0), text_color = color.white, text_size = size.tiny)
+    table.cell(dash, 1, 0, "", bgcolor = color.new(color.navy, 0))
+
+    table.cell(dash, 0, 1, "Bullish-Risk", text_size = size.tiny)
+    table.cell(dash, 1, 1, str.tostring(math.round(bullScore, 1)), bgcolor = f_dashColor(bullScore), text_size = size.tiny)
+
+    table.cell(dash, 0, 2, "Bearish-Risk", text_size = size.tiny)
+    table.cell(dash, 1, 2, str.tostring(math.round(bearScore, 1)), bgcolor = f_dashColor(bearScore), text_size = size.tiny)
+
+    table.cell(dash, 0, 3, "Sentiment (F&G analog)", text_size = size.tiny)
+    table.cell(dash, 1, 3, str.tostring(math.round(sentimentComposite, 1)), text_size = size.tiny)
+
+    table.cell(dash, 0, 4, "Sentiment Velocity(5)", text_size = size.tiny)
+    table.cell(dash, 1, 4, str.tostring(math.round(sentVelocity5, 1)), text_size = size.tiny)
+
+    table.cell(dash, 0, 5, "Sentiment Accel(5)", text_size = size.tiny)
+    table.cell(dash, 1, 5, str.tostring(math.round(sentAccel5, 1)), text_size = size.tiny)
+
+    table.cell(dash, 0, 6, "FOMO Index", text_size = size.tiny)
+    table.cell(dash, 1, 6, str.tostring(math.round(fomoIndex, 1)), bgcolor = f_dashColor(fomoIndex), text_size = size.tiny)
+
+    table.cell(dash, 0, 7, "Panic Index", text_size = size.tiny)
+    table.cell(dash, 1, 7, str.tostring(math.round(panicIndex, 1)), bgcolor = f_dashColor(panicIndex), text_size = size.tiny)
+
+    table.cell(dash, 0, 8, "Herding Proxy (corr)", text_size = size.tiny)
+    table.cell(dash, 1, 8, na(herdingProxy) ? "n/a" : str.tostring(math.round(herdingProxy, 2)), text_size = size.tiny)
+
+    table.cell(dash, 0, 9, "Regime (ADX)", text_size = size.tiny)
+    table.cell(dash, 1, 9, isTrending ? "Trending" : "Ranging", text_size = size.tiny)
+
+    table.cell(dash, 0, 10, "Note", text_size = size.tiny)
+    table.cell(dash, 1, 10, "Bearish-Risk lebih noisy*", text_size = size.tiny)
+
+// -----------------------------------------------------------------------------
+// OPTIONAL SCORE PLOTS (separate pane) — off overlay, for inspection
+// -----------------------------------------------------------------------------
+plot(bullScore, title = "Bullish-Risk Score", color = color.green, display = display.data_window)
+plot(bearScore, title = "Bearish-Risk Score", color = color.red,   display = display.data_window)
+plot(sentimentComposite, title = "Sentiment Composite", color = color.purple, display = display.data_window)
+plot(fomoIndex, title = "FOMO Index", color = color.orange, display = display.data_window)
+plot(panicIndex, title = "Panic Index", color = color.maroon, display = display.data_window)

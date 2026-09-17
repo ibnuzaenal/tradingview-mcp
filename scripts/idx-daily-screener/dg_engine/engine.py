@@ -224,18 +224,25 @@ def elite(a,without_pattern=False):
     upthrust=(h>r1)&(c<r1)&(uw>b)&(clv<=.35)&(rv>=1.5)
     beartrap=(l<s1)&(c>s1)&(lw>b)&(rv>=1.2)
     gaptrap=(o>r1)&(c<r1)&(clv<=.35)&(rv>=1.5)
-    rev2=liquid&(nearS|(pb==1))&(cb>=2)&(rv>=1.5)&~bulltrap&~over
+    rev2=(nearS|(pb==1))&(cb>=2)&(rv>=1.5)&~bulltrap&~over
     stopbase=np.where(rt|bo,np.minimum(l,np.where(np.isfinite(r1),r1,l)),np.where(np.isfinite(s1),s1,l))
     stop=stopbase-.25*atr; risk=np.maximum(c-stop,MINTICK); stoppct=risk/c*100
     rr1=np.where(r1>c,(r1-c)/risk,np.nan); rr2=np.where(r2>c,(r2-c)/risk,np.nan)
     rr=np.fmin(rr1,rr2); rr=np.where(np.isnan(rr),99,rr); rrok=rr>=2; stopok=(stop<c)&(stoppct<=8)
     mom=I(a['rsi']>50)+I(a['rsi']>lag(a['rsi']))+I(a['macdHist']>lag(a['macdHist']))+I(a['diPlus']>a['diMinus'])
     sv=bo|rt|pull|rev
-    hard=liquid&~a['wBear']&(strong|early)&(stbull|bosb)&sv&((acl>=2)|accluster|bo)&(mom>=2)&~over&~bulltrap&~upthrust&~gaptrap&rrok&stopok&~bearblock
-    bs=I(a['wBull'])+np.where(strong,2,np.where(early,1,0))+2*I(stbull)+I(inzone|rt)+I(sv)+I(rv>=1.2)+I(mom>=2)+I(rrok)+I(cb>=2)
-    core=hard&(bs>=8); rv2=~core&rev2&rrok&stopok&~upthrust&~gaptrap&~bearblock; buy=core|rv2
+    # DG3.1 removed the "02. Filter" gate (liquid/rrOK/stopOK) from hardGates/
+    # buyScore/buySignalReversal/panel entirely (research_v24/
+    # dg31_filter_removal_research.py found removing it did not degrade
+    # held-out signal quality) — liquid/rrok/stopok are still computed above
+    # (rrAvailable/stopPct/liquid stay exported as diagnostics) but no longer
+    # gate anything below. DG3.4 also dropped buyScore's rrOK term (max 1pt)
+    # and rescaled the buySignalCore threshold 8->7 to keep the same slack.
+    hard=~a['wBear']&(strong|early)&(stbull|bosb)&sv&((acl>=2)|accluster|bo)&(mom>=2)&~over&~bulltrap&~upthrust&~gaptrap&~bearblock
+    bs=I(a['wBull'])+np.where(strong,2,np.where(early,1,0))+2*I(stbull)+I(inzone|rt)+I(sv)+I(rv>=1.2)+I(mom>=2)+I(cb>=2)
+    core=hard&(bs>=7); rv2=~core&rev2&~upthrust&~gaptrap&~bearblock; buy=core|rv2
     # Panel's earlier clauses take priority over buySignal, reproducing contradiction.
-    panel=buy&liquid&~(a['wBear']|bear)&~(bulltrap|upthrust|gaptrap)&~over&(stbull|rev2)&(sv|rev2)&rrok&stopok
+    panel=buy&~(a['wBear']|bear)&~(bulltrap|upthrust|gaptrap)&~over&(stbull|rev2)&(sv|rev2)
     setup=np.select([rt,pull,bo,rev,rev2],['RT','PB','BO','RV','RV2'],'NONE')
     values=dict(bosBull=bosb,bosBear=boss,structureBull=stbull,structureBear=stbear,nearSupport=nearS,nearResistance=nearR,
         strong=strong,early=early,bear=bear,sideways=sideways,liquid=liquid,extension=ext,overextended=over,

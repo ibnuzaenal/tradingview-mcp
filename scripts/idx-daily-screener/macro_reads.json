@@ -2,7 +2,5 @@
 {"label":"Kurs Rupiah (USD/IDR)","trend":"BEARISH","structure":"LH + LL","score_bull":26,"score_bear":51,"key":"Rupiah cenderung MENGUAT — USD/IDR turun, ADX 28 (tren kuat)"},
 {"label":"Harga Emas (XAU/USD)","trend":"SIDEWAYS/TRANSISI","structure":"HH + HL","score_bull":62,"score_bear":17,"key":"Bias tetap NAIK — struktur HH+HL, fase akumulasi"},
 {"label":"Bursa AS (S&P 500)","trend":"SIDEWAYS/TRANSISI","structure":"HH + HL","score_bull":70,"score_bear":18,"key":"Double Bottom terkonfirmasi — skor bullish dominan 70 vs 18"},
-{"label":"Bursa China (Shanghai)","trend":"SIDEWAYS/TRANSISI","structure":"MIXED / RANGE","score_bull":42,"score_bear":21,"key":"Masih choppy, belum ada arah tegas"},
-{"label":"Bursa Jepang (Nikkei 225)","trend":"SIDEWAYS/TRANSISI","structure":"MIXED / RANGE","score_bull":33,"score_bear":35,"key":"Nyaris netral, condong melemah tipis"},
-{"label":"Bursa Korea (KOSPI)","trend":"BEARISH","structure":"LH + LL","score_bull":16,"score_bear":46,"key":"Tren MELEMAH — tekanan jual masih dominan"}
+{"label":"Bursa China (Shanghai)","trend":"SIDEWAYS/TRANSISI","structure":"MIXED / RANGE","score_bull":42,"score_bear":21,"key":"Masih choppy, belum ada arah tegas"}
 ]

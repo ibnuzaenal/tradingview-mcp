@@ -1,13 +1,12 @@
 {
   "Perbankan": ["BBCA", "BMRI", "BBRI", "BBNI", "BRIS"],
-  "Pertambangan Batu Bara": ["ADRO", "ADMR", "AADI", "BYAN", "BUMI", "PTBA", "ITMG", "INDY", "HRUM", "CUAN", "DEWA", "TCPI"],
+  "Pertambangan Batu Bara": ["ADRO", "ADMR", "AADI", "BYAN", "PTBA", "ITMG", "INDY", "HRUM", "CUAN"],
   "Pertambangan Mineral & Logam": ["ANTM", "MDKA", "AMMN", "TINS", "INCO", "NCKL", "BRMS", "EMAS"],
-  "Energi & Migas": ["BREN", "PGEO", "MEDC", "ELSA", "RATU", "RAJA", "DSSA", "PTRO"],
+  "Energi & Migas": ["BREN", "PGEO", "MEDC", "DSSA", "PTRO"],
   "Petrokimia & Basic Materials": ["TPIA", "BRPT", "SMGR"],
-  "Consumer Goods (FMCG/Tembakau)": ["ICBP", "INDF", "UNVR", "GGRM", "HMSP", "CMRY"],
+  "Consumer Goods (FMCG/Tembakau)": ["ICBP", "INDF", "UNVR"],
   "Agrikultur (CPO)": ["AALI", "SMAR"],
-  "Properti & Real Estate": ["PANI", "BSDE", "PWON", "APLN", "CTRA", "ASRI", "KOTA"],
-  "Telekomunikasi & Teknologi Digital": ["TLKM", "ISAT", "EXCL", "WIFI", "COIN"],
-  "Otomotif, Alat Berat & Ritel": ["ASII", "UNTR", "VKTR", "ERAA", "MAPA"],
-  "Konglomerasi & Investasi": ["BNBR", "CDIA"]
+  "Properti & Real Estate": ["PANI", "BSDE"],
+  "Telekomunikasi & Teknologi Digital": ["TLKM", "ISAT", "EXCL"],
+  "Otomotif, Alat Berat & Ritel": ["ASII", "ERAA", "MAPA"]
 }

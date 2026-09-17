@@ -100,9 +100,10 @@ def bias_cls(label):
 def key_params_html(d):
     """'Parameter Kunci' panel — the model-internal drivers behind the
     DECISION/score above (Decision Gate 2.0/3.0, AI Forecast 2.0, MTF/Market
-    alignment, Bandarmologi, volatility regime). Only rendered for the DG2.7+
-    schema (absent entirely on older Dev V2.4-sourced rows, detected via the
-    presence of dg3_dir)."""
+    alignment, Bandarmologi, EWS Detection, volatility regime). Only
+    rendered for the DG2.7+ schema (absent entirely on older Dev V2.4-sourced
+    rows, detected via the presence of dg3_dir); the EWS Detection chip
+    itself is only shown when the JSONL row carries ews_state (DG3.4+ rows)."""
     if not d.get("dg3_dir"):
         return ""
     items = []
@@ -114,6 +115,11 @@ def key_params_html(d):
     if d.get("bandar_anomaly"):
         bandar += " &#9888; anomali"
     items.append(("Bandarmologi", bandar, bias_cls(d.get("bandar_flow"))))
+    if d.get("ews_state") is not None:
+        ews_val = f'{d.get("ews_state","—")} &middot; Bull {d.get("ews_bull_risk","—")}% Bear {d.get("ews_bear_risk","—")}%'
+        if (d.get("ews_panic_index") or 0) >= 65:
+            ews_val += " &#9888; Panic"
+        items.append(("EWS Detection", ews_val, bias_cls(d.get("ews_state"))))
     vol_bits = []
     if d.get("hurst_regime"):
         vol_bits.append(str(d["hurst_regime"]))
@@ -181,6 +187,25 @@ for r in stocks:
 stocks.sort(key=lambda r: (r["_rank"], -r["_score"]))
 
 categories = json.load(open(os.path.join(SCRIPT_DIR, "categories.json")))
+STOCK_INDEX_STATUS = json.load(open(os.path.join(SCRIPT_DIR, "macro_facts.json"))).get("stock_index_status", {})
+
+def index_status_badges(sym):
+    """Small MSCI/FTSE badge(s) next to a stock card's ticker — ONLY for
+    tickers with a verified status in macro_facts.json's stock_index_status
+    (see its own _note key). in=green (masuk/masih terdaftar), watch=red
+    (dalam evaluasi/downgrade), out=black (dikeluarkan)."""
+    statuses = STOCK_INDEX_STATUS.get(sym)
+    if not statuses:
+        return ""
+    cls_map = {"in": "idxbadge-in", "watch": "idxbadge-watch", "out": "idxbadge-out"}
+    badges = "".join(
+        f'<span class="idxbadge {cls_map.get(state, "idxbadge-watch")}" title="{html.escape(index_name)}: '
+        f'{"masuk/masih terdaftar" if state == "in" else "dalam evaluasi" if state == "watch" else "dikeluarkan"}">'
+        f'{html.escape(index_name)}</span>'
+        for index_name, state in statuses.items()
+    )
+    return badges
+
 category_of = {}
 for cat, tickers in categories.items():
     for t in tickers:
@@ -237,6 +262,24 @@ def volume_reco(list_type, trap, rvol, acls):
             return ("SELL", "sell", "Penurunan didukung volume & skor bearish")
         return ("WASPADA", "warn", "Turun tapi bisa jadi shakeout, cermati")
 
+def ews_dominant(d):
+    """Dominant EWS Detection signal for one stock — the triggered Bull/Bear
+    state when ewsState fired, else Panic when it clears its own (higher)
+    vote threshold, else whichever of Bull-Risk/Bear-Risk currently reads
+    higher (still sub-threshold, shown as informational-only)."""
+    state = d.get("ews_state")
+    bull, bear, panic = d.get("ews_bull_risk"), d.get("ews_bear_risk"), d.get("ews_panic_index")
+    if bull is None or bear is None:
+        return None
+    if state == "BULL":
+        return (f"EWS BULL {bull:.0f}%", "bull")
+    if state == "BEAR":
+        return (f"EWS BEAR {bear:.0f}%", "bear")
+    if panic is not None and panic >= 65:
+        return (f"EWS PANIC {panic:.0f}%", "warn")
+    dom, val = ("BULL", bull) if bull >= bear else ("BEAR", bear)
+    return (f"EWS {dom} {val:.0f}% (netral)", "neutral")
+
 def gainer_loser_row(r, list_type):
     d = r.get("dashboard") or {}
     acls = r["_acls"]
@@ -253,13 +296,15 @@ def gainer_loser_row(r, list_type):
             proj = (target - price) / price * 100
     rvol_txt = f"{rvol:.1f}x" if rvol is not None else "—"
     proj_txt = f"{proj:+.1f}%" if proj is not None else "—"
+    ews = ews_dominant(d)
+    ews_html = f'<span class="gl-ews {ews[1]}">{html.escape(ews[0])}</span> ' if ews else ""
     return f'''<div class="gl-row gl-{reco_cls}">
       <span class="gl-reco {reco_cls}">{reco_label}</span>
       <span class="gl-ticker">{bare(r["symbol"])}</span>
-      <span class="gl-chg {"up" if r["_chg"] >= 0 else "down"}">{r["_chg"]:+.2f}%</span>
+      <span class="gl-chg {"up" if r["_chg"] >= 0 else "down"}"><em>Hari Ini</em> {r["_chg"]:+.2f}%</span>
       <span class="gl-vol">Vol {rvol_txt}</span>
-      <span class="gl-proj">Proyeksi {proj_txt}</span>
-      <span class="gl-note">{html.escape(reco_note)}</span>
+      <span class="gl-proj"><em>Besok</em> Proyeksi {proj_txt}</span>
+      <span class="gl-note">{ews_html}{html.escape(reco_note)}</span>
     </div>'''
 
 gainers_html = "\n".join(gainer_loser_row(r, "gainer") for r in top_gainers)
@@ -267,7 +312,7 @@ losers_html = "\n".join(gainer_loser_row(r, "loser") for r in top_losers)
 
 gainers_losers_section = f'''<section class="gl-section">
   <h2 class="section-title">Top Gainer &amp; Loser — Sinyal Besok</h2>
-  <p class="section-sub">10 saham penguatan &amp; pelemahan terbesar hari ini, disaring dengan volume relatif (RVOL) untuk menghindari jebakan/trap broker sebelum dijadikan acuan transaksi besok.</p>
+  <p class="section-sub">10 saham penguatan &amp; pelemahan terbesar hari ini, disaring dengan volume relatif (RVOL) untuk menghindari jebakan/trap broker sebelum dijadikan acuan transaksi besok. <b>Hari Ini</b> = pergerakan harga aktual hari ini (dasar perankingan top gainer/loser). <b>Besok</b> = proyeksi arah untuk sesi berikutnya (Target 2 untuk gainer, level Stop untuk loser) berdasarkan sinyal DECISION/volume saat ini — bukan jaminan, sesi berikutnya bisa berbeda.</p>
   <div class="gl-legend">
     <span><span class="gl-dot buy"></span>BUY — didukung volume</span>
     <span><span class="gl-dot sell"></span>SELL — didukung volume</span>
@@ -284,6 +329,54 @@ gainers_losers_section = f'''<section class="gl-section">
     </div>
   </div>
 </section>'''
+
+# ---------------------------------------------------------------------
+# Akumulasi & Distribusi Bertahap — Top 10 (3 hari terakhir) — ranks the
+# whole watchlist by the Bandarmologi accScore/distScore averaged over the
+# trailing 3 bars (acc_score_3d/dist_score_3d from dg_snapshot.py), rather
+# than the single-bar accClass/distClass tag already shown on each stock's
+# own card, so a sustained 3-day flow doesn't get lost next to a single
+# outlier day.
+# ---------------------------------------------------------------------
+def acc_dist_row(r, list_type):
+    d = r.get("dashboard") or {}
+    score = d.get("acc_score_3d") if list_type == "acc" else d.get("dist_score_3d")
+    days = d.get("acc_days_3d") if list_type == "acc" else d.get("dist_days_3d")
+    rvol_avg = d.get("rvol_avg_3d")
+    chg3d = d.get("chg_3d_pct")
+    cls = "buy" if list_type == "acc" else "sell"
+    score_txt = f"{score:.1f}" if score is not None else "—"
+    days_txt = f"{days}/3 hari" if days is not None else "—"
+    rvol_txt = f"{rvol_avg:.2f}x" if rvol_avg is not None else "—"
+    chg_txt = f"{chg3d:+.2f}%" if chg3d is not None else "—"
+    return f'''<div class="gl-row gl-{cls}">
+      <span class="gl-reco {cls}">{score_txt}</span>
+      <span class="gl-ticker">{bare(r["symbol"])}</span>
+      <span class="gl-chg {"up" if (chg3d or 0) >= 0 else "down"}">{chg_txt}</span>
+      <span class="gl-vol">RVOL {rvol_txt}</span>
+      <span class="gl-proj">{days_txt}</span>
+      <span class="gl-note">Skor {"akumulasi" if list_type == "acc" else "distribusi"} rata-rata 3 hari &middot; perubahan harga 3 hari &middot; jumlah hari tertandai {"AK" if list_type == "acc" else "DS"}&ge;1</span>
+    </div>'''
+
+top_acc = sorted(stocks, key=lambda r: (r.get("dashboard") or {}).get("acc_score_3d", float("-inf")), reverse=True)[:10]
+top_dist = sorted(stocks, key=lambda r: (r.get("dashboard") or {}).get("dist_score_3d", float("-inf")), reverse=True)[:10]
+acc_html = "\n".join(acc_dist_row(r, "acc") for r in top_acc)
+dist_html = "\n".join(acc_dist_row(r, "dist") for r in top_dist)
+
+acc_dist_section = f'''<div class="summary">
+    <h2>Akumulasi &amp; Distribusi Bertahap — 3 Hari Terakhir</h2>
+    <p class="section-sub">10 saham dengan skor akumulasi/distribusi rata-rata tertinggi dalam 3 hari transaksi terakhir (Bandarmologi CMF + RVOL) — sinyal aliran dana bertahap, bukan lonjakan satu hari.</p>
+    <div class="gl-two-col">
+      <div class="gl-block">
+        <h3 class="gl-block-title up">&#9650; Top 10 Akumulasi</h3>
+        {acc_html}
+      </div>
+      <div class="gl-block">
+        <h3 class="gl-block-title down">&#9660; Top 10 Distribusi</h3>
+        {dist_html}
+      </div>
+    </div>
+  </div>'''
 
 now = datetime.datetime.now()
 gen_time = now.strftime("%d %B %Y, %H:%M WIB")
@@ -354,11 +447,12 @@ def card_html(r, is_index=False):
 
     card_class = "card index-card" if is_index else "card"
     header_label = "IHSG — Kondisi Pasar" if is_index else sym
+    badges_html = "" if is_index else index_status_badges(sym)
 
     return f'''<article class="{card_class}">
       <header class="card-head">
         <div class="ticker-row">
-          <span class="ticker">{header_label}</span>
+          <span class="ticker">{header_label}</span>{badges_html}
           <span class="price">{price}</span>
           <span class="chg {chg_cls}">{html.escape(str(chg))}</span>
         </div>
@@ -443,11 +537,185 @@ def stat_chip(item):
 
 domestic_items_html = "\n".join(stat_chip(it) for it in macro_facts["domestic"]["items"])
 
-geo_points_html = "\n".join(
-    f'<li><span class="macro-trend warn">{ARROW["warn"]}</span> {html.escape(pt["text"])}</li>' for pt in macro_facts["geopolitics"]["points"]
-)
-
 sentiment_stats_html = "\n".join(stat_chip(it) for it in macro_facts["sentiment"]["stats"])
+
+def index_events_html(sentiment):
+    ie = sentiment.get("index_events")
+    if not ie:
+        return ""
+    status_cls = lambda s: "neutral-warn" if "akan datang" in s else "neutral"
+    rows_html = "\n".join(
+        f'''<tr>
+          <td class="mono">{html.escape(r["symbol"])}</td>
+          <td>{html.escape(r["index"])}</td>
+          <td>{html.escape(r["action"])}</td>
+          <td class="mono">{html.escape(r["effective"])}</td>
+          <td><span class="pill small {status_cls(r["status"])}">{html.escape(r["status"])}</span></td>
+          <td class="idx-impact">{html.escape(r["impact"])}</td>
+        </tr>''' for r in ie["rows"]
+    )
+    other_html = "\n".join(
+        f'<li><b>{html.escape(o["name"])}</b> — {o["timeline"]} <span class="idx-other-note">({o["note"]})</span></li>'
+        for o in ie.get("other_ratings", [])
+    )
+    fl = ie.get("full_list")
+    fl_html = ""
+    if fl:
+        fl_groups = "\n".join(
+            f'''<li><span class="macro-trend {g["arrow"]}">{ARROW[g["arrow"]]}</span>
+              <b>{html.escape(g["index"])}</b> — {html.escape(g["action"])}:
+              {" ".join(f'<span class="pill small neutral">{html.escape(s)}</span>' for s in g["symbols"])}
+            </li>''' for g in fl["groups"]
+        )
+        fl_html = f'''<div class="idx-full-list">
+          <h4 class="idx-events-title">{fl["label"]}</h4>
+          <ul class="idx-full-list-groups">{fl_groups}</ul>
+          <p class="idx-note"><b>{html.escape(fl["no_additions_note"])}</b></p>
+          <p class="idx-note">{html.escape(fl["incomplete_note"])}</p>
+        </div>'''
+    cw = ie.get("correction_watch")
+    cw_html = ""
+    if cw:
+        cw_items = "\n".join(
+            f'<li><span class="pill small {"bear" if it["in_watchlist"] else "neutral"}">{html.escape(it["symbol"])}</span>'
+            f'{" <em>(watchlist)</em>" if it["in_watchlist"] else " <em>(luar watchlist)</em>"} — {html.escape(it["reason"])}</li>'
+            for it in cw["items"]
+        )
+        cw_html = f'''<div class="idx-correction-watch">
+          <h4 class="idx-events-title">{html.escape(cw["label"])}</h4>
+          <p class="idx-note">{html.escape(cw["note"])}</p>
+          <ul class="idx-correction-list">{cw_items}</ul>
+          <p class="idx-note">{html.escape(cw["rotation_note"])}</p>
+        </div>'''
+    trend_html = f'<p class="idx-trend">{ie["trend"]}</p>' if ie.get("trend") else ""
+    return f'''<div class="idx-events">
+      <h4 class="idx-events-title">{html.escape(ie["label"])}</h4>
+      <div class="table-wrap"><table class="idx-events-table">
+        <thead><tr><th>Kode</th><th>Indeks</th><th>Aksi</th><th>Efektif</th><th>Status</th><th>Estimasi Dampak</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table></div>
+      {trend_html}
+      {fl_html}
+      {cw_html}
+      <ul class="idx-other-ratings">{other_html}</ul>
+    </div>'''
+
+sentiment_index_events_html = index_events_html(macro_facts["sentiment"])
+
+def fomo_panic_html(fp, stock_list):
+    if not fp:
+        return ""
+    fomo_vals = [(r.get("dashboard") or {}).get("ews_fomo_index") for r in stock_list]
+    panic_vals = [(r.get("dashboard") or {}).get("ews_panic_index") for r in stock_list]
+    fomo_vals = [v for v in fomo_vals if v is not None]
+    panic_vals = [v for v in panic_vals if v is not None]
+    states = [(r.get("dashboard") or {}).get("ews_state") for r in stock_list]
+    n = len(fomo_vals) or 1
+    avg_fomo = sum(fomo_vals) / n
+    avg_panic = sum(panic_vals) / (len(panic_vals) or 1)
+    n_fomo_hot = sum(1 for v in fomo_vals if v >= 65)
+    n_panic_hot = sum(1 for v in panic_vals if v >= 65)
+    n_bull = states.count("BULL")
+    n_bear = states.count("BEAR")
+    n_neutral = states.count("NETRAL")
+
+    def level(avg, hot_n, total):
+        if avg >= 60 or hot_n / total >= 0.25:
+            return "TINGGI", "bear"
+        if avg >= 45 or hot_n / total >= 0.10:
+            return "MODERAT", "neutral-warn"
+        return "RENDAH", "bull"
+
+    fomo_level, fomo_cls = level(avg_fomo, n_fomo_hot, n)
+    panic_level, panic_cls = level(avg_panic, n_panic_hot, n)
+    skew = "BEARISH" if n_bear > n_bull else ("BULLISH" if n_bull > n_bear else "NETRAL")
+    skew_cls = "bear" if skew == "BEARISH" else ("bull" if skew == "BULLISH" else "neutral")
+
+    catalysts_html = "\n".join(
+        f'<li><span class="macro-trend {c["arrow"]}">{ARROW[c["arrow"]]}</span> {c["text"]}</li>' for c in fp["catalysts"]
+    )
+
+    def top_n_syms(key, n=6):
+        ranked = sorted(
+            (r for r in stock_list if (r.get("dashboard") or {}).get(key) is not None),
+            key=lambda r: r["dashboard"][key], reverse=True,
+        )
+        return [(bare(r["symbol"]), r["dashboard"][key]) for r in ranked[:n]]
+
+    def sym_pills(pairs, cls, arrow):
+        return " ".join(
+            f'<span class="pill small {cls}">{ARROW[arrow]} {html.escape(s)} {v:.0f}%</span>' for s, v in pairs
+        )
+
+    hawkish_syms = sym_pills(top_n_syms("ews_panic_index"), "bear", "down")
+    dovish_syms = sym_pills(top_n_syms("ews_fomo_index"), "bull", "up")
+
+    return f'''<div class="macro-block wide">
+      <h3>{html.escape(fp["label"])}</h3>
+      <div class="stat-row">
+        <div class="stat-chip"><span class="macro-trend {panic_cls}">{ARROW["warn"]}</span><b class="stat-value {panic_cls}">PANIC: {panic_level}</b><span class="stat-name">rata-rata {avg_panic:.1f}, {n_panic_hot}/{n} saham &ge;65</span></div>
+        <div class="stat-chip"><span class="macro-trend {fomo_cls}">{ARROW["warn"] if fomo_cls=="bear" else ARROW["up"] if fomo_cls=="bull" else ARROW["flat"]}</span><b class="stat-value {fomo_cls}">FOMO: {fomo_level}</b><span class="stat-name">rata-rata {avg_fomo:.1f}, {n_fomo_hot}/{n} saham &ge;65</span></div>
+        <div class="stat-chip"><span class="macro-trend {skew_cls}">{ARROW["down"] if skew_cls=="bear" else ARROW["up"] if skew_cls=="bull" else ARROW["flat"]}</span><b class="stat-value {skew_cls}">Bias EWS State: {skew}</b><span class="stat-name">{n_bear} Bear / {n_bull} Bull / {n_neutral} Netral dari {n} saham</span></div>
+      </div>
+      <ul class="geo-list">{catalysts_html}</ul>
+      <p class="block-resume"><span class="pill small bear">Skenario Hawkish</span> {fp["scenario_hawkish"]}</p>
+      <p class="idx-note"><b>Saham dengan risiko Panic Index tertinggi saat ini (paling rentan tertekan lanjut):</b><br>{hawkish_syms}</p>
+      <p><span class="pill small bull">Skenario Dovish</span> {fp["scenario_dovish"]}</p>
+      <p class="idx-note"><b>Saham dengan FOMO Index tertinggi saat ini (paling berpotensi lanjut momentum naik):</b><br>{dovish_syms}</p>
+      <p class="idx-note">{html.escape(fp["note"])}</p>
+    </div>'''
+
+sentiment_fomo_panic_html = fomo_panic_html(macro_facts.get("fomo_panic"), stocks)
+
+def market_review_html(mr):
+    if not mr:
+        return ""
+    items_html = "\n".join(
+        f'<li><span class="macro-trend {it["arrow"]}">{ARROW[it["arrow"]]}</span> '
+        f'<a href="{html.escape(it["url"])}" target="_blank" rel="noopener">{html.escape(it["headline"])}</a> '
+        f'<span class="idx-other-note">({html.escape(it["source"])})</span></li>'
+        for it in mr["items"]
+    )
+    return f'''<div class="macro-block wide">
+      <h3>{html.escape(mr["label"])}</h3>
+      <ul class="geo-list market-review-list">{items_html}</ul>
+      <p class="idx-note">{html.escape(mr["sources_note"])}</p>
+    </div>'''
+
+market_review_section_html = market_review_html(macro_facts.get("market_review"))
+
+def recommendations_html(rec, stock_list):
+    if not rec:
+        return ""
+    by_symbol = {bare(r["symbol"]): r for r in stock_list}
+
+    def own_read(sym):
+        r = by_symbol.get(sym)
+        if not r:
+            return ""
+        d = r.get("dashboard") or {}
+        acls = r.get("_acls") or action_class(d.get("decision"))
+        return f' &middot; analisa sendiri: <span class="pill small {acls}">{html.escape(d.get("decision") or "—")}</span> {html.escape(str(r.get("change_pct") or ""))}'
+
+    def rec_row(it, consistent):
+        sym = it["symbol"]
+        src_badges = " ".join(f'<span class="idx-other-note">{html.escape(s)}</span>' for s in it["sources"])
+        cls = "bull-strong" if consistent else "neutral"
+        note = f' — {html.escape(it["note"])}' if it.get("note") else ""
+        return (f'<li><span class="pill small {cls}">{"KONSISTEN" if consistent else "1 sumber"}</span> '
+                f'<b class="mono">{html.escape(sym)}</b>{note} — {src_badges}{own_read(sym)}</li>')
+
+    consistent_html = "\n".join(rec_row(it, True) for it in rec["consistent"])
+    single_html = "\n".join(rec_row(it, False) for it in rec.get("single_source", []))
+    return f'''<div class="macro-block wide">
+      <h3>{html.escape(rec["label"])}</h3>
+      <p class="idx-note">{html.escape(rec["note"])}</p>
+      <ul class="rec-list">{consistent_html}</ul>
+      {f'<p class="idx-events-title">Rekomendasi Satu Sumber</p><ul class="rec-list">{single_html}</ul>' if single_html else ''}
+      <p class="idx-note">{html.escape(rec["sources_note"])}</p>
+    </div>'''
+
+recommendations_section_html = recommendations_html(macro_facts.get("recommendations"), stocks)
 
 sources_html = " &middot; ".join(html.escape(s) for s in macro_facts["sources"])
 
@@ -463,27 +731,102 @@ macro_section = f'''<section class="macro-section">
     {policy_cards_html}
   </div>
 
-  <div class="macro-two-col">
-    <div class="macro-block">
-      <h3>{html.escape(macro_facts["domestic"]["label"])}</h3>
-      <div class="stat-row">{domestic_items_html}</div>
-    </div>
-    <div class="macro-block">
-      <h3>{html.escape(macro_facts["geopolitics"]["label"])}</h3>
-      <ul class="geo-list">{geo_points_html}</ul>
-    </div>
+  <div class="macro-block wide">
+    <h3>{html.escape(macro_facts["domestic"]["label"])}</h3>
+    <div class="stat-row">{domestic_items_html}</div>
   </div>
+
+  {market_review_section_html}
 
   <div class="macro-block wide">
     <h3>{html.escape(macro_facts["sentiment"]["label"])}</h3>
     <div class="stat-row">{sentiment_stats_html}</div>
     <p class="macro-resume block-resume"><b>{html.escape(macro_facts["sentiment"]["resume"])}</b></p>
+    {sentiment_index_events_html}
   </div>
+
+  {sentiment_fomo_panic_html}
 
   <p class="macro-sources">Sumber: {sources_html}</p>
 </section>'''
 
 summary_stocks = sorted(stocks, key=lambda r: (r["_rank"], -r["_score"]))
+
+def ak3_ds3_box_html(stock_list):
+    """AK3 (akumulasi tier tertinggi) / DS3 (distribusi tier tertinggi) yang
+    muncul di salah satu dari 3 bar terakhir — hanya saham yang benar-benar
+    kena sinyal ini yang ditampilkan (bukan seluruh watchlist)."""
+    hits = [r for r in stock_list if (r.get("dashboard") or {}).get("ak3_ds3_type")]
+    if not hits:
+        return ""
+    ak3 = [r for r in hits if r["dashboard"]["ak3_ds3_type"] == "AK3"]
+    ds3 = [r for r in hits if r["dashboard"]["ak3_ds3_type"] == "DS3"]
+
+    def row(r):
+        d = r["dashboard"]
+        is_ak3 = d["ak3_ds3_type"] == "AK3"
+        cls = "bull-strong" if is_ak3 else "bear-strong"
+        days = d["ak3_ds3_days_ago"]
+        when = "hari ini" if days == 0 else f"{days} hari lalu"
+        proj = d.get("ak3_ds3_proj_price")
+        proj_txt = fmt_price(proj) if proj is not None else "—"
+        bos = d.get("ak3_ds3_bos")
+        bos_cls = "bull" if bos == "BOS+" else ("bear" if bos == "BOS-" else None)
+        bos_html = f' <span class="pill small {bos_cls}">{bos}</span>' if bos else ''
+        return (f'<li><span class="pill small {cls}">{d["ak3_ds3_type"]}</span>{bos_html} '
+                f'<b class="mono">{html.escape(bare(r["symbol"]))}</b> ({when}) &rarr; '
+                f'Proyeksi <b>{d["ak3_ds3_proj_label"]}</b> @ <span class="mono">{proj_txt}</span></li>')
+
+    ak3_html = "\n".join(row(r) for r in ak3) or '<li class="idx-note">Tidak ada.</li>'
+    ds3_html = "\n".join(row(r) for r in ds3) or '<li class="idx-note">Tidak ada.</li>'
+
+    candidates = [r for r in stock_list if (r.get("dashboard") or {}).get("ak3_ds3_candidate_type")]
+    cand_ak3 = [r for r in candidates if r["dashboard"]["ak3_ds3_candidate_type"] == "AK3"]
+    cand_ds3 = [r for r in candidates if r["dashboard"]["ak3_ds3_candidate_type"] == "DS3"]
+
+    def cand_row(r):
+        d = r["dashboard"]
+        cls = "bull" if d["ak3_ds3_candidate_type"] == "AK3" else "bear"
+        return (f'<li><span class="pill small {cls}">{d["ak3_ds3_candidate_type"]}?</span> '
+                f'<b class="mono">{html.escape(bare(r["symbol"]))}</b> — {html.escape(d["ak3_ds3_candidate_note"])}</li>')
+
+    cand_ak3_html = "\n".join(cand_row(r) for r in cand_ak3) or '<li class="idx-note">Tidak ada.</li>'
+    cand_ds3_html = "\n".join(cand_row(r) for r in cand_ds3) or '<li class="idx-note">Tidak ada.</li>'
+
+    return f'''<div class="ak3ds3-box">
+      <h3 class="idx-events-title">Sinyal AK3/DS3 — 3 Hari Terakhir</h3>
+      <p class="idx-note">AK3/DS3 adalah tier akumulasi/distribusi TERTINGGI Bandarmologi (accClass/distClass = 3, elite()) — sinyal volume+struktur paling kuat, bukan sekadar CMF positif/negatif biasa. Proyeksi BUY memakai Target 2 kartu saham terkait, proyeksi SELL memakai level Stop-nya — angka yang sama, bukan model baru. BOS+/BOS- (Break of Structure bullish/bearish) ditampilkan kalau terjadi PADA HARI YANG SAMA dengan sinyal AK3/DS3-nya, sebagai konfirmasi struktur harga di atas konfirmasi volume.</p>
+      <div class="gl-two-col">
+        <div class="gl-block">
+          <h3 class="gl-block-title up">&#9650; AK3 — Akumulasi Kuat</h3>
+          <ul class="idx-correction-list">{ak3_html}</ul>
+        </div>
+        <div class="gl-block">
+          <h3 class="gl-block-title down">&#9660; DS3 — Distribusi Kuat</h3>
+          <ul class="idx-correction-list">{ds3_html}</ul>
+        </div>
+      </div>
+      <h3 class="idx-events-title" style="margin-top:12px">Prediksi Kandidat AK3/DS3 Besok</h3>
+      <p class="idx-note">Heuristik kedekatan ke ambang tier-3 (skor sudah &ge;6 dari kebutuhan &ge;8, RVOL tinggal butuh tembus 2x) — BUKAN model prediksi tervalidasi, sekadar menandai siapa yang paling dekat ke ambang AK3/DS3 kalau volume berlanjut besok.</p>
+      <div class="gl-two-col">
+        <div class="gl-block">
+          <h3 class="gl-block-title up">&#9650; Kandidat AK3</h3>
+          <ul class="idx-correction-list">{cand_ak3_html}</ul>
+        </div>
+        <div class="gl-block">
+          <h3 class="gl-block-title down">&#9660; Kandidat DS3</h3>
+          <ul class="idx-correction-list">{cand_ds3_html}</ul>
+        </div>
+      </div>
+    </div>'''
+
+ak3_ds3_section_html = ak3_ds3_box_html(stocks)
+
+def signal_pill(d, key, cls_key):
+    val = d.get(key)
+    if not val:
+        return '<span class="pill small neutral">—</span>'
+    return f'<span class="pill small {html.escape(d.get(cls_key, "neutral"))}">{html.escape(val)}</span>'
 
 summary_rows = "\n".join(
     (lambda acls, d, grade_txt, gcls: f'''<tr class="reco-{acls}">
@@ -494,6 +837,9 @@ summary_rows = "\n".join(
       <td>{html.escape(d.get("decision") or "—")}</td>
       <td><span class="pill small {gcls}">{html.escape(grade_txt)}</span></td>
       <td class="mono num">{r["_score"]}/10</td>
+      <td>{signal_pill(d, "smart_money", "smart_money_cls")}</td>
+      <td>{signal_pill(d, "foreign_flow_proxy", "foreign_flow_cls")}</td>
+      <td>{signal_pill(d, "aggression", "aggression_cls")}</td>
     </tr>''')(r["_acls"], r.get("dashboard") or {}, *grade_from_score(r["_score"])) for r in summary_stocks
 )
 
@@ -694,7 +1040,16 @@ h1 {{
 .gl-chg.down {{ color: var(--bear-strong); }}
 .gl-vol {{ font-family: var(--font-mono); color: var(--ink-soft); white-space: nowrap; }}
 .gl-proj {{ font-family: var(--font-mono); font-weight: 600; color: var(--accent); white-space: nowrap; }}
+.gl-chg em, .gl-proj em {{ font-style: normal; font-weight: 500; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.03em; color: var(--ink-soft); opacity: 0.8; margin-right: 2px; }}
 .gl-note {{ color: var(--ink-soft); grid-column: 1 / -1; font-size: 10.5px; margin-top: -2px; }}
+.gl-ews {{
+  font-family: var(--font-mono); font-weight: 700; font-size: 9.5px; letter-spacing: 0.02em;
+  padding: 1px 5px; border-radius: 999px; white-space: nowrap; margin-right: 4px;
+}}
+.gl-ews.bull {{ background: var(--bull-soft); color: var(--bull-strong); }}
+.gl-ews.bear {{ background: var(--bear-soft); color: var(--bear-strong); }}
+.gl-ews.warn {{ background: var(--neutral-warn-soft); color: var(--neutral-warn); }}
+.gl-ews.neutral {{ background: var(--neutral-soft); color: var(--neutral); }}
 .gl-row.gl-warn {{ background: color-mix(in srgb, var(--neutral-warn-soft) 40%, transparent); }}
 
 .macro-grid {{
@@ -735,7 +1090,6 @@ h1 {{
 .fact-list {{ margin: 0; padding-left: 1.1em; }}
 .fact-list li {{ font-size: 11.5px; color: var(--ink-soft); line-height: 1.6; }}
 
-.macro-two-col {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 12px; }}
 .macro-block {{
   background: var(--surface); border: 0.5px solid var(--line); border-radius: 12px;
   padding: 14px 16px; break-inside: avoid; page-break-inside: avoid;
@@ -754,6 +1108,7 @@ h1 {{
 .stat-value.up {{ color: var(--bull-strong); }}
 .stat-value.down {{ color: var(--bear-strong); }}
 .stat-value.flat {{ color: var(--neutral); }}
+.stat-value.warn {{ color: var(--neutral-warn); }}
 .stat-name {{ color: var(--ink-soft); }}
 .stat-note {{ color: var(--ink-soft); font-size: 10.5px; }}
 
@@ -765,6 +1120,13 @@ h1 {{
 .card-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }}
 .ticker-row {{ display: flex; align-items: baseline; gap: 8px; }}
 .ticker {{ font-family: var(--font-mono); font-weight: 600; font-size: 15px; letter-spacing: 0.02em; }}
+.idxbadge {{
+  font-family: var(--font-mono); font-weight: 700; font-size: 8px; letter-spacing: 0.02em;
+  padding: 1px 4px; border-radius: 4px; white-space: nowrap; margin-right: -2px;
+}}
+.idxbadge-in {{ background: var(--bull-soft); color: var(--bull-strong); }}
+.idxbadge-watch {{ background: var(--bear-soft); color: var(--bear); }}
+.idxbadge-out {{ background: var(--ink); color: var(--paper); }}
 .price {{ font-family: var(--font-mono); font-size: 14px; color: var(--ink-soft); }}
 .chg {{ font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; padding: 1px 6px; border-radius: 5px; }}
 .chg.up {{ color: var(--bull-strong); background: var(--bull-soft); }}
@@ -879,6 +1241,27 @@ tr.reco-bear-strong, tr.reco-bear {{ background: color-mix(in srgb, var(--bear-s
 tr.reco-neutral-warn {{ background: color-mix(in srgb, var(--neutral-warn-soft) 55%, transparent); }}
 thead th:first-child, tbody td:first-child {{ white-space: nowrap; }}
 
+.idx-events {{ margin-top: 12px; padding-top: 10px; border-top: 0.5px dashed var(--line); }}
+.idx-events-title {{ font-family: var(--font-mono); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-soft); margin: 0 0 6px; }}
+.table-wrap {{ overflow-x: auto; }}
+.idx-events-table {{ font-size: 11.5px; }}
+.idx-impact {{ color: var(--ink-soft); font-size: 10.5px; max-width: 34ch; }}
+.idx-note {{ color: var(--ink-soft); font-size: 11.5px; margin: 6px 0; }}
+.ak3ds3-box {{ margin: 10px 0 16px; padding: 12px 14px; background: var(--surface); border: 0.5px solid var(--line); border-radius: 12px; }}
+.rec-list {{ list-style: none; margin: 6px 0; padding: 0; font-size: 11.5px; display: flex; flex-direction: column; gap: 6px; }}
+.rec-list .idx-other-note {{ background: var(--paper); padding: 1px 5px; border-radius: 4px; margin-right: 2px; }}
+.market-review-list a {{ color: var(--accent); text-decoration: none; }}
+.market-review-list a:hover {{ text-decoration: underline; }}
+.idx-other-ratings {{ list-style: none; margin: 8px 0 0; padding: 0; font-size: 11px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 3px; }}
+.idx-other-note {{ opacity: 0.75; }}
+.idx-trend {{ font-size: 11.5px; color: var(--ink-soft); margin: 8px 0; padding: 8px 10px; background: var(--accent-soft); border-radius: 8px; }}
+.idx-full-list {{ margin-top: 10px; }}
+.idx-full-list-groups {{ list-style: none; margin: 6px 0; padding: 0; font-size: 11.5px; display: flex; flex-direction: column; gap: 6px; }}
+.idx-full-list-groups .pill {{ margin: 1px 2px 1px 0; display: inline-block; }}
+.idx-correction-watch {{ margin-top: 10px; }}
+.idx-correction-list {{ list-style: none; margin: 6px 0; padding: 0; font-size: 11px; display: flex; flex-direction: column; gap: 4px; }}
+.idx-correction-list em {{ font-style: normal; color: var(--ink-soft); font-size: 10px; }}
+
 .footnote {{
   margin-top: 2rem; padding-top: 1rem; border-top: 0.5px solid var(--line);
   font-size: 11px; color: var(--ink-soft); max-width: 72ch;
@@ -897,13 +1280,14 @@ thead th:first-child, tbody td:first-child {{ white-space: nowrap; }}
   <div class="masthead">
     <p class="eyebrow">IDX Analyzer DG &middot; Screening Harian</p>
     <h1>Ringkasan Teknikal Watchlist IDX</h1>
-    <p class="subhead">Seluruh angka di bawah dihitung ulang di Python mengikuti persis rumus indikator "IDX Analyzer DG2.7" (dari source Pine-nya) atas data harga historis — bukan analisa baru, bukan interpretasi baru. Skor, level, DECISION, Decision Gate 2.0/3.0, dan prediksi TR/AI Forecast adalah keluaran rumus asli indikator tersebut.</p>
     <p class="gen-time">Dibuat {gen_time}</p>
     <div class="legend-box">
-      <div class="legend-item"><b>Decision Gate 3.0</b> model komposit baru DG2.7 — probabilitas naik 20 hari, hasil fit statistik 19 sinyal (akurasi test 53,95% vs baseline 52,50%, edge kecil tapi nyata).</div>
-      <div class="legend-item"><b>Gate 2.0</b> skor keyakinan gabungan (~15 sinyal berbobot) dari arah trend, forecast, dan volume — bukan model ter-fit, tapi konsisten dipakai lintas versi.</div>
+      <div class="legend-item"><b>Decision Gate 3.0</b> model komposit — probabilitas naik 20 hari, hasil fit statistik 19 sinyal (akurasi test 53,95% vs baseline 52,50%, edge kecil tapi nyata).</div>
+      <div class="legend-item"><b>Gate 2.0</b> skor keyakinan gabungan dari arah trend, forecast, volume, dan EWS Detection (DG3.4) — bukan model ter-fit, tapi konsisten dipakai lintas versi.</div>
       <div class="legend-item"><b>AI Forecast 2.0</b> model logistik beku (frozen) memprediksi arah 20 hari dari 6 fitur teknikal — edge tervalidasi ~1pp di atas baseline.</div>
+      <div class="legend-item"><b>EWS Detection</b> Bullish-Risk/Bearish-Risk (kontrarian, oversold/overbought) dan FOMO/Panic Index (DG3.0-3.4) — Panic ikut memberi vote SELL di atas ambang, FOMO tetap diagnostik saja (tidak ada edge berdiri sendiri).</div>
       <div class="legend-item"><b>Hurst / Vol Percentile</b> rezim pasar (TRENDING/MEAN-REV/RANDOM) dan posisi volatilitas EWMA saat ini relatif terhadap histori 252 hari.</div>
+      <div class="legend-item"><b>Badge MSCI/FTSE</b> di kartu saham (kalau ada): <span class="idxbadge idxbadge-in">MSCI</span> hijau = masuk/masih terdaftar, <span class="idxbadge idxbadge-watch">FTSE</span> merah = dalam evaluasi/downgrade, <span class="idxbadge idxbadge-out">MSCI</span> hitam = dikeluarkan. HANYA ditandai untuk saham yang statusnya terverifikasi dari sumber publik (lihat panel Sentimen Pasar) — tanpa badge bukan berarti pasti tidak termasuk, statusnya belum terverifikasi.</div>
     </div>
   </div>
 
@@ -911,22 +1295,31 @@ thead th:first-child, tbody td:first-child {{ white-space: nowrap; }}
     {index_card}
   </div>
 
-  {gainers_losers_section}
-
   {macro_section}
 
   <h2 class="section-title">Watchlist Saham</h2>
 
+  {ak3_ds3_section_html}
+
+  {acc_dist_section}
+
+  {gainers_losers_section}
+
+  {recommendations_section_html}
+
   <div class="summary">
-    <h2>Ringkasan Entry — Sekilas</h2>
+    <h2>Rekomendasi Saham Hari Ini</h2>
+    <p class="section-sub">Seluruh kode saham di watchlist — sinyal DECISION dari analisa DG3.4 sendiri (bukan opini analis pihak ketiga, lihat panel "Rekomendasi Saham Hari Ini" di atas untuk itu).</p>
     <div class="reco-legend">
       <span><span class="reco-dot bull-strong"></span>BUY</span>
       <span><span class="reco-dot neutral"></span>WAIT</span>
       <span><span class="reco-dot bear-strong"></span>SELL</span>
     </div>
+    <p class="section-sub">Smart Money &amp; Aggression dari data volume/candle OHLCV 2 hari terakhir (Bandarmologi CMF, close-location-value + RVOL) — sinyal riil dari harga &amp; volume. <b>Foreign Flow adalah PROXY</b> (arah harga saham vs arah IHSG pada volume tinggi), <b>bukan data net-buy/sell asing riil</b> (KSEI/broker summary tidak tersedia di pipeline OHLCV ini).</p>
+
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Reko</th><th>Kode</th><th class="num">Harga</th><th class="num">Chg%</th><th>Decision</th><th>Grade</th><th class="num">Skor</th></tr></thead>
+      <thead><tr><th>Reko</th><th>Kode</th><th class="num">Harga</th><th class="num">Chg%</th><th>Decision</th><th>Grade</th><th class="num">Skor</th><th>Smart Money</th><th>Foreign Flow*</th><th>Aggression</th></tr></thead>
       <tbody>
         {summary_rows}
       </tbody>
@@ -936,7 +1329,7 @@ thead th:first-child, tbody td:first-child {{ white-space: nowrap; }}
 
   {stock_sections}
 
-  <p class="footnote">DECISION, skor, Gate 2.0/3.0, dan grade dihitung ulang di Python mengikuti persis rumus indikator "IDX Analyzer DG2.7" (dibaca dari source Pine-nya), dijalankan atas data harga historis harian — bukan analisa baru. Cakupan yang BELUM disertakan: Risk Overlay Gate 2.0 (Kelly/PSR/Circuit Breaker/CUSUM) dan Lead Quality Tracker (perlu histori trade berjalan), serta win-rate pola chart (Double Top/Bottom/H&amp;S) — lihat catatan skill untuk detail. Ini adalah alat bantu analisa teknikal, bukan rekomendasi investasi atau jaminan hasil.</p>
+  <p class="footnote">DECISION, skor, Gate 2.0/3.0, EWS Detection, dan grade dihitung ulang di Python mengikuti persis rumus indikator "IDX Analyzer DG3.4" (dibaca dari source Pine-nya), dijalankan atas data harga historis harian — bukan analisa baru. Cakupan yang BELUM disertakan: Risk Overlay Gate 2.0 (Kelly/PSR/Circuit Breaker/CUSUM) dan Lead Quality Tracker (perlu histori trade berjalan), dg3LiveAccuracy dan callout rekomendasi BUY/SELL akhir (keduanya konstruksi real-time di chart, tidak ada padanan bersih di satu snapshot CSV stateless), serta win-rate pola chart (Double Top/Bottom/H&amp;S) — lihat catatan skill untuk detail. Kolom "Foreign Flow" di Ringkasan Entry adalah proxy arah-harga-vs-IHSG-pada-volume-tinggi, BUKAN data net-buy/sell asing riil (KSEI/rekap broker) — pipeline ini hanya berbasis OHLCV Yahoo Finance. Ini adalah alat bantu analisa teknikal, bukan rekomendasi investasi atau jaminan hasil.</p>
 </div>
 </body>
 </html>'''

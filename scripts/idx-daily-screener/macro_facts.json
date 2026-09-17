@@ -10,27 +10,53 @@
     },
     {
       "label": "Suku Bunga The Fed",
-      "value": "3,50–3,75%",
+      "value": "3,75–4,00%",
       "trend": "hawkish",
       "arrow": "up",
-      "tag": "Risiko naik",
-      "facts": ["FOMC berikut 16 Sep 2026", "Inflasi inti 2,6% (di atas target)", "Sempat priced-in 67% peluang naik 25bps"]
+      "tag": "Baru dinaikkan",
+      "facts": ["FOMC 17 Sep 2026: naik 25bps — kenaikan pertama sejak 2023", "Proyeksi PCE inflation 3,7% (2026), GDP 2,3%", "Proyeksi pengangguran turun ke 4,1% (2026 & 2027)"]
     }
   ],
   "domestic": {
     "label": "Domestik Indonesia",
     "items": [
       {"name": "Inflasi Agustus", "value": "3,19% yoy", "arrow": "flat", "note": "0,21% mtm — terkendali dalam target BI"},
-      {"name": "Neraca Dagang", "value": "Membaik", "arrow": "up", "note": "Data Jun 2026; rilis Agu–Sep 2026 belum keluar"}
+      {"name": "Neraca Dagang", "value": "Membaik", "arrow": "up", "note": "Data Jun 2026; rilis Agu–Sep 2026 belum keluar"},
+      {"name": "PMI Manufaktur Agustus", "value": "49,8", "arrow": "down", "note": "Turun dari 50,2 (Jul) — kembali ke zona kontraksi (<50), pesanan baru naik tipis"},
+      {"name": "Cadangan Devisa Juli", "value": "US$145,3 M", "arrow": "down", "note": "Turun dari US$145,6 M (Jun) — intervensi BI jaga rupiah; setara 5,6 bulan impor, masih di atas standar kecukupan"},
+      {"name": "Penerimaan Pajak (s.d. Agustus)", "value": "Rp1.409,1 T", "arrow": "flat", "note": "59,8% target APBN, tumbuh +24% yoy — tapi berpotensi shortfall Rp80-140 T di akhir tahun"},
+      {"name": "Indeks Ekspektasi Makroekonomi (IKM) Q3", "value": "28", "arrow": "down", "note": "Turun tajam dari 37 — sentimen pelaku usaha memburuk kuartal ini"},
+      {"name": "Rating Kredit Indonesia", "value": "Fitch/Moody's Negatif, S&P Stabil", "arrow": "warn", "note": "Fitch BBB (outlook Negatif, Mar 2026), Moody's Baa2 (outlook Negatif, Feb 2026) — kredibilitas kebijakan fiskal; S&P BBB/A-2 (outlook Stabil, Jul 2026) — anggap tekanan fiskal sementara"},
+      {"name": "Pergantian Menteri Keuangan", "value": "Purbaya → Suahasil Nazara", "arrow": "warn", "note": "Reshuffle mendadak 14 Sep 2026; Purbaya (kebijakan fiskal ekspansif, kontroversi dana SAL Rp200 T ke bank Himbara) digantikan Wamenkeu Suahasil Nazara — picu kekhawatiran kesinambungan kebijakan, rupiah melemah ke Rp17.669/USD"}
     ]
   },
-  "geopolitics": {
-    "label": "Geopolitik & Risiko Global",
-    "points": [
-      {"text": "Ketegangan dagang & teknologi AS-China berlanjut", "arrow": "warn"},
-      {"text": "Konflik Timur Tengah tekan pasar energi — 20% LNG global lewat Selat Hormuz", "arrow": "warn"},
-      {"text": ">60% PDB global kini terdampak gesekan geopolitik (WEF 2026)", "arrow": "warn"}
-    ]
+  "market_review": {
+    "label": "Market Review Indonesia",
+    "items": [
+      {"headline": "IHSG rebound ke 6.463,61 (+0,42%) di sesi I Kamis 17 Sep, setelah ditutup melemah 6.436,8 (-0,38%) Rabu — breadth 394 saham naik / 245 turun / 324 flat", "source": "Bisnis.com, Kliksumut.com", "url": "https://market.bisnis.com/read/20260917/7/2004788/pergerakan-ihsg-dan-rekomendasi-saham-hari-ini-kamis-17-september-2026", "arrow": "up"},
+      {"headline": "HASIL FOMC: The Fed resmi naikkan suku bunga 25bps ke 3,75%-4,00% — kenaikan pertama sejak 2023; proyeksi GDP AS naik tipis ke 2,3% (2026)", "source": "Federal Reserve, Kiplinger", "url": "https://www.federalreserve.gov/monetarypolicy/fomcminutes20260729.htm", "arrow": "down"},
+      {"headline": "IHSG hari ini diproyeksi bergerak di 6.400-6.500, dengan potensi upside ke 6.541-6.581 jika bertahan di atas support 6.370", "source": "Investor.id, Bloomberg Technoz", "url": "https://investor.id/market/454351/prediksi-ihsg-dan-rekomendasi-saham-kamis-17-september-2026", "arrow": "up"},
+      {"headline": "BMRI dan BBRI (keduanya di watchlist ini) jadi penopang utama penguatan IHSG di sesi I", "source": "Bloomberg Technoz", "url": "https://www.bloombergtechnoz.com/detail-news/121872/ihsg-bertahan-hijau-siang-ini-turut-ditopang-saham-bmri-dan-bbri", "arrow": "up"},
+      {"headline": "Resistance 6.500 jadi level kunci penentu arah lanjutan pasca-hasil FOMC diserap pasar sore ini", "source": "Aktualita.co, Kliksumut.com", "url": "https://aktualita.co/ekonomi/prediksi-ihsg-17-september-2026-menguat-sesi-i-waspadai-resistance", "arrow": "flat"},
+      {"headline": "Konteks: reshuffle mendadak Menteri Keuangan (Purbaya → Suahasil Nazara, 14 Sep) masih membayangi persepsi kesinambungan kebijakan fiskal", "source": "CNN Indonesia, Tribunnews", "url": "https://www.idnfinancials.com/id/news/68858/pasar-saham-ri-menanti-suahasil-effect-dan-arah-fed-rate", "arrow": "warn"}
+    ],
+    "sources_note": "Dirangkum dari IDNFinancials.com dan sumber kredibel lain (Bisnis.com, Bloomberg Technoz, Investor.id, Aktualita.co, Kliksumut.com, Federal Reserve) per 17 September 2026 — klik headline untuk artikel sumber."
+  },
+  "recommendations": {
+    "label": "Rekomendasi Saham Hari Ini",
+    "note": "Hanya saham yang direkomendasikan OLEH 2 SEKURITAS ATAU LEBIH secara independen dianggap konsisten/tervalidasi silang; rekomendasi satu-sumber tetap dicantumkan tapi ditandai terpisah. Ini rangkuman opini analis pihak ketiga, bukan rekomendasi dari laporan ini.",
+    "consistent": [
+      {"symbol": "PGEO", "sources": ["MNC Sekuritas", "Mega Capital Sekuritas"], "note": "Sentimen energi terbarukan menguat kembali"},
+      {"symbol": "BRMS", "sources": ["BRI Danareksa Sekuritas", "Mega Capital Sekuritas"], "note": "Tambang emas — momentum akumulasi"},
+      {"symbol": "INCO", "sources": ["BRI Danareksa Sekuritas", "Mega Capital Sekuritas"], "note": "Nikel — tetap diperhatikan multi-sekuritas"}
+    ],
+    "single_source": [
+      {"symbol": "AMMN", "sources": ["MNC Sekuritas"]},
+      {"symbol": "MAPA", "sources": ["Mega Capital Sekuritas"]},
+      {"symbol": "BBRI", "sources": ["Pilarmas Investindo Sekuritas"]},
+      {"symbol": "AADI", "sources": ["Pilarmas Investindo Sekuritas"]}
+    ],
+    "sources_note": "Dirangkum dari Liputan6 (rekomendasi analis MNC/BRI Danareksa/Mega Capital), Investor.id, dan Bisnis.com per 17 September 2026 — hanya saham yang juga ada di watchlist laporan ini yang ditampilkan."
   },
   "sentiment": {
     "label": "Sentimen Pasar & Aliran Dana Asing",
@@ -41,12 +67,79 @@
       {"name": "Asing Agustus", "value": "+Rp11,09 T", "arrow": "up", "note": "all-market"},
       {"name": "Asing 1 Sep", "value": "+Rp2,03 T", "arrow": "up", "note": "BBRI top net buy"},
       {"name": "MSCI Mei 2026", "value": "-19 saham", "arrow": "down", "note": "outflow pasif ~US$1,3-2 M"},
-      {"name": "FTSE Sep 2026", "value": "Ditunda → Des", "arrow": "flat", "note": "status Secondary EM tetap"}
+      {"name": "MSCI Agustus 2026", "value": "-11 saham", "arrow": "down", "note": "efektif 1 Sep — GOTO & CPIN turun kelas, 9 saham keluar Small Cap; total AuM MSCI Indonesia turun ~US$753 jt"},
+      {"name": "FTSE Sep 2026", "value": "BSDE turun kelas", "arrow": "down", "note": "Mid Cap → Small Cap, efektif 21 Sep 2026 (rebalance data 18 Sep)"},
+      {"name": "GDX (Gold Miners ETF)", "value": "94,14 (-3,05%)", "arrow": "down", "note": "close 14 Sep 2026 — proxy sentimen saham tambang emas (ANTM/MDKA/BRMS)"},
+      {"name": "GDXJ (Junior Gold Miners)", "value": "120,89 (-3,60%)", "arrow": "down", "note": "close 14 Sep 2026 — konfirmasi tekanan jual di miners junior"}
     ],
-    "resume": "Mode wait-and-see: net buy asing di saham besar (BBRI) tertahan outflow pasif MSCI & penundaan upgrade FTSE, plus musim September historis lemah."
+    "resume": "Mode wait-and-see: net buy asing di saham besar (BBRI) tertahan outflow pasif MSCI & rebalancing FTSE, plus musim September historis lemah dan tekanan di saham emas global (GDX/GDXJ turun) yang membebani sentimen ANTM/MDKA/BRMS.",
+    "index_events": {
+      "label": "Saham Watchlist Terdampak Index Rating",
+      "trend": "Tren index rating sepanjang 2026 konsisten negatif untuk aksesibilitas pasar Indonesia: BAIK MSCI (Mei &amp; Agustus) MAUPUN FTSE Russell (Jun &amp; Sep) sama sekali tidak menambahkan atau menaikkan kelas satu pun saham RI di review 2026 sejauh ini — hanya penghapusan/penurunan kelas. FTSE bahkan eksplisit menunda kebijakan penambahan konstituen baru sampai minimal review Desember 2026. Kombinasi ini + outlook kredit Fitch/Moody's yang negatif menunjukkan preferensi dana pasif asing terhadap saham RI sedang terstruktur menurun, bukan sekadar siklus jangka pendek.",
+      "rows": [
+        {"symbol": "RATU", "index": "MSCI Global Small Cap", "action": "Keluar (full deletion)", "effective": "1 Sep 2026", "status": "sudah berlaku", "impact": "Outflow pasif est. US$6,9-13 jt; likuiditas tipis → tekanan jual jangka pendek lebih tajam dari nominal outflow-nya"},
+        {"symbol": "SMGR", "index": "MSCI Global Small Cap", "action": "Keluar (full deletion)", "effective": "1 Sep 2026", "status": "sudah berlaku", "impact": "Outflow pasif est. US$6,9-13 jt; termasuk saham dengan dampak harga paling tajam di batch ini (likuiditas relatif terhadap ukuran outflow)"},
+        {"symbol": "TCPI", "index": "MSCI Global Small Cap", "action": "Keluar (full deletion)", "effective": "1 Sep 2026", "status": "sudah berlaku", "impact": "Outflow pasif est. US$6,9-13 jt; free float/frekuensi transaksi jadi alasan utama pencoretan"},
+        {"symbol": "BSDE", "index": "FTSE Russell GEIS", "action": "Turun kelas Mid Cap → Small Cap", "effective": "21 Sep 2026", "status": "akan datang", "impact": "Potensi outflow pasif dari fund yang mengacu ke segmen Mid Cap; belum tercermin penuh di harga saat laporan ini dibuat"}
+      ],
+      "full_list": {
+        "label": "Daftar Lengkap Saham Masuk-Keluar Index Rating (MSCI &amp; FTSE Russell, 2026)",
+        "groups": [
+          {"index": "MSCI (Agustus 2026, efektif 1 Sep)", "action": "Keluar dari MSCI Global Standard", "symbols": ["GOTO"], "arrow": "down"},
+          {"index": "MSCI (Agustus 2026, efektif 1 Sep)", "action": "Turun kelas ke MSCI Small Cap", "symbols": ["CPIN"], "arrow": "down"},
+          {"index": "MSCI (Agustus 2026, efektif 1 Sep)", "action": "Keluar dari MSCI Global Small Cap (full deletion)", "symbols": ["ARTO", "BUKA", "ESSA", "FILM", "HEAL", "KPIG", "RATU", "SMGR", "TCPI"], "arrow": "down"},
+          {"index": "FTSE Russell (September 2026, efektif 21 Sep)", "action": "Turun kelas Mid Cap → Small Cap", "symbols": ["BSDE"], "arrow": "down"},
+          {"index": "FTSE Russell (September 2026, efektif 21 Sep)", "action": "Turun kelas Small Cap → Micro Cap", "symbols": ["BBYB", "BJBR", "BTPS", "LPKR", "LPPF", "MNCN", "PNLF", "SILO", "SMRA", "SCMA"], "arrow": "down"},
+          {"index": "FTSE Russell (September 2026, efektif 21 Sep)", "action": "Keluar dari Micro Cap (full deletion) — sebagian, 28 saham total*", "symbols": ["ADHI", "ASSA", "AGRO", "PTPP", "PRDA", "RALS", "TPMA"], "arrow": "down"}
+        ],
+        "no_additions_note": "TIDAK ADA satu pun saham RI yang ditambahkan atau dinaikkan kelas di kedua review ini — MSCI Agustus maupun FTSE September 2026 murni penghapusan/penurunan kelas.",
+        "incomplete_note": "*FTSE menghapus 28 saham dari Micro Cap secara total, namun sumber publik yang diverifikasi hanya menyebutkan 7 nama secara eksplisit — 21 nama lainnya belum teridentifikasi di sumber yang tersedia saat laporan ini dibuat."
+      },
+      "correction_watch": {
+        "label": "Saham Berpotensi Koreksi Lanjutan (Sorotan Analis)",
+        "note": "Nama-nama yang disorot analis pasca-rebalancing MSCI/FTSE karena penurunan klasifikasi/outflow pasif — bukan rekomendasi jual, melainkan daftar pantau jika koreksi berlanjut berlebihan dari fundamental/valuasinya.",
+        "items": [
+          {"symbol": "SMGR", "in_watchlist": true, "reason": "Keluar MSCI Small Cap 1 Sep — likuiditas relatif kecil vs ukuran outflow"},
+          {"symbol": "BSDE", "in_watchlist": true, "reason": "Turun kelas FTSE Mid→Small Cap efektif 21 Sep — outflow belum sepenuhnya priced-in"},
+          {"symbol": "HEAL", "in_watchlist": false, "reason": "Keluar MSCI Small Cap 1 Sep — di luar watchlist, konteks pasar"},
+          {"symbol": "BTPS", "in_watchlist": false, "reason": "Turun kelas FTSE Small→Micro Cap — di luar watchlist, konteks pasar"},
+          {"symbol": "SILO", "in_watchlist": false, "reason": "Turun kelas FTSE Small→Micro Cap — di luar watchlist, konteks pasar"}
+        ],
+        "rotation_note": "Analis juga mencermati potensi rotasi dana asing ke saham big-cap yang tidak terdampak rebalancing — BBCA, BBRI, BMRI, TLKM, BBNI (semuanya ada di watchlist ini)."
+      },
+      "other_ratings": [
+        {"name": "MSCI Quarterly Review", "timeline": "Review berikutnya ~November 2026", "note": "siklus kuartalan Feb/Mei/Agu/Nov"},
+        {"name": "FTSE Russell Semi-Annual Review", "timeline": "Review berikutnya ~Des 2026 (interim) / Mar 2027 (semi-annual penuh)", "note": "Mar 2026 sempat ditunda bersamaan MSCI; kebijakan tunda penambahan konstituen baru masih berlaku"},
+        {"name": "IDX LQ45 / IDX30 Evaluasi Mayor", "timeline": "Evaluasi mayor Jan & Jul, evaluasi minor Apr & Okt", "note": "evaluasi minor berikutnya sekitar Okt 2026"},
+        {"name": "Sovereign Credit Rating (Fitch/Moody's/S&P)", "timeline": "Fitch &amp; Moody's outlook Negatif sejak Feb-Mar 2026; S&P Stabil (Jul 2026) — review berikutnya biasanya 6-12 bulan", "note": "bukan index saham, tapi menggerakkan yield SBN &amp; risk premium yang ikut menekan valuasi ekuitas"},
+        {"name": "ESG Indices (DJSI, FTSE4Good)", "timeline": "Siklus review tahunan, umumnya Kuartal 3-4", "note": "konstituen RI umumnya big-cap defensif (TLKM, UNVR, BBCA) — belum ada rilis spesifik 2026 yang terverifikasi saat laporan ini dibuat"}
+      ]
+    }
+  },
+  "fomo_panic": {
+    "label": "Analisa FOMO vs PANIC — Arah Pasar 2 Minggu ke Depan",
+    "catalysts": [
+      {"text": "HASIL FOMC 17 Sep SUDAH KELUAR: The Fed naikkan 25bps ke 3,75-4,00% (kenaikan pertama sejak 2023) — skenario hawkish di bawah kini status TEREALISASI, bukan lagi hipotesis", "arrow": "warn"},
+      {"text": "IHSG merespons dengan rebound +0,42% di sesi I (17 Sep) ke 6.463 — pasar tampak sudah price-in kenaikan ini sebelumnya, reaksi awal tidak panik", "arrow": "up"},
+      {"text": "Rebalancing FTSE Russell efektif 21 Sep 2026 (BSDE turun kelas) — katalis berikutnya, potensi outflow pasif susulan", "arrow": "warn"},
+      {"text": "Musim September historis lemah (7 dari 10 tahun terakhir IHSG melemah di bulan ini)", "arrow": "warn"},
+      {"text": "Reshuffle Menkeu (Purbaya→Suahasil, 14 Sep) masih jadi overhang kekhawatiran kesinambungan kebijakan fiskal", "arrow": "warn"},
+      {"text": "Rotasi dana ke big-cap (BMRI/BBRI jadi penopang sesi I 17 Sep) sebagai pelarian dari saham terdampak rebalancing", "arrow": "up"}
+    ],
+    "scenario_hawkish": "SUDAH TEREALISASI (17 Sep): The Fed menaikkan 25bps seperti diantisipasi. Fokus 2 minggu ke depan bergeser ke DAMPAK LANJUTAN: jika rupiah melanjutkan pelemahan pasca-kenaikan, tekanan terbesar tetap di saham properti, infrastruktur, dan growth; sinyal PANIC pada saham beta tinggi (tambang/energi) yang sudah elevated berisiko makin memburuk. Koreksi jangka pendek ke kisaran 6.000-6.200 (dari rally sebelumnya sejak titik rendah 5.300) masih dalam radar jika reaksi pasar berbalik negatif setelah efek awal mereda.",
+    "scenario_dovish": "Reaksi awal pasar terhadap kenaikan Fed justru POSITIF (IHSG rebound +0,42% sesi I) — mengindikasikan kenaikan 25bps sudah ter-price-in sebelumnya. Jika pola ini bertahan (sell-the-rumor-buy-the-fact), ruang bagi saham dengan FOMO Index tinggi saat ini untuk lanjut momentum naik terbuka, dan target optimis analis ke 7.000-7.200 akhir 2026 kembali relevan sebagai skenario dasar 2 minggu ke depan — dengan syarat resistance 6.500 berhasil ditembus.",
+    "note": "Skor FOMO/PANIC di bawah dihitung LIVE dari EWS Detector (DG3.4) atas seluruh watchlist saat laporan ini dibuat — bukan angka statis, akan berbeda tiap kali dijalankan ulang."
+  },
+  "stock_index_status": {
+    "_note": "Status keanggotaan index rating PER SAHAM — HANYA diisi untuk saham yang datanya terverifikasi dari sumber publik (factsheet MSCI, notice FTSE Russell resmi, pemberitaan kredibel). Saham watchlist lain yang TIDAK muncul di sini bukan berarti pasti di luar index tersebut — statusnya belum terverifikasi saat laporan dibuat, sengaja tidak ditandai daripada menebak. in=masuk/masih terdaftar (hijau), watch=dalam proses evaluasi/downgrade (merah), out=dikeluarkan (hitam).",
+    "BBCA": {"MSCI": "in"}, "BBRI": {"MSCI": "in"}, "BMRI": {"MSCI": "in"}, "TLKM": {"MSCI": "in"},
+    "ASII": {"MSCI": "in"}, "BBNI": {"MSCI": "in"}, "BREN": {"MSCI": "in"}, "BRMS": {"MSCI": "in"},
+    "SMGR": {"MSCI": "out"},
+    "BSDE": {"FTSE": "watch"}
   },
   "sources": [
-    "Bank Indonesia", "BPS", "Federal Reserve/FOMC", "CNBC Indonesia", "IDN Financials", "MSCI & OJK", "FTSE Russell", "WEF Global Risks Report 2026"
+    "Bank Indonesia", "BPS", "Federal Reserve/FOMC", "CNBC Indonesia", "IDN Financials", "MSCI & OJK", "FTSE Russell", "WEF Global Risks Report 2026",
+    "Bisnis.com", "Kontan", "Liputan6", "Rikopedia Research", "Ajaib", "Yahoo Finance (GDX/GDXJ)", "Bloomberg Technoz", "Investor.id", "Aktualita.co", "Kliksumut.com"
   ],
-  "as_of": "3 September 2026"
+  "as_of": "17 September 2026"
 }
